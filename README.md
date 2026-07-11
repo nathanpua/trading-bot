@@ -289,6 +289,40 @@ regardless of what the plan says — the desk chief *decides*, the executor *gov
 
 ---
 
+## 🖥️ Web Dashboard
+
+A real-time trading dashboard with portfolio overview, positions, trade
+history, and analysis — deployed as a Dockerized FastAPI + React app.
+
+```
+Trading Bot scripts ──► Dashboard (read-only) ──► Browser (Tailscale)
+(~/trading-bot)         Docker :8010               http://100.92.170.88:8081
+```
+
+### Features
+
+- **Dashboard** — Equity gauge, equity curve chart, market regime badge,
+  kill-switch status, latest cycle report
+- **Positions** — Live positions with entry/current/P&L, stop levels,
+  position detail cards
+- **Trades** — Historical trade journal with expandable thesis/reasoning,
+  filterable by strategy/status/outcome
+- **Analysis** — Win rate by strategy, P&L by symbol charts, lessons
+  learned, and Supermemory semantic search
+
+### Deploy
+
+```bash
+cd frontend
+sg docker -c "docker compose up -d --build"
+```
+
+The dashboard is read-only — it never places trades or modifies bot state.
+It imports the bot's Python modules (`alpaca_client`, `trade_journal`,
+`trade_memory`) to query live data. Access via Caddy on your Tailscale IP.
+
+---
+
 ## 📁 Project Layout
 
 ```
@@ -308,6 +342,11 @@ trading-bot/
 ├── requirements.txt
 ├── .env.example              # key template → copy to .env
 ├── scripts/                  # scanner, summaries, trading-floor pipeline
+├── frontend/                 # web dashboard (Dockerized FastAPI + React)
+│   ├── Dockerfile            # multi-stage build (React → FastAPI)
+│   ├── docker-compose.yml
+│   ├── backend/              # FastAPI API server
+│   └── frontend/             # React + Vite + Recharts SPA
 ├── data/                     # (gitignored) cached market-data CSVs
 ├── reports/                  # (gitignored) cycle logs & assessments
 └── logs/                     # (gitignored) runtime logs

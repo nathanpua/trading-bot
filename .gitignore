@@ -24,6 +24,13 @@ ENV/
 *.db
 *.json
 
+# Frontend (dashboard)
+node_modules/
+dist/
+!frontend/frontend/package.json
+!frontend/frontend/package-lock.json
+!frontend/frontend/tsconfig.json
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

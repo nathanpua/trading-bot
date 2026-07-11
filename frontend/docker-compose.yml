@@ -1,0 +1,23 @@
+services:
+  trading-dashboard:
+    build: .
+    image: trading-dashboard
+    container_name: trading-dashboard
+    restart: unless-stopped
+    ports:
+      - "8010:8010"
+    environment:
+      - PYTHONPATH=/app/backend:/app/bot
+    volumes:
+      # Bot code (read-only) — for importing alpaca_client, trade_journal, trade_memory
+      - ../.:/app/bot:ro
+      # Reports (read-only) — cycle JSONs, state, trade journal DB
+      - ../reports:/app/bot/reports:ro
+      # Data dir (read-only) — cached CSVs
+      - ../data:/app/bot/data:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8010/api/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
