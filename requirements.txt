@@ -1,0 +1,22 @@
+# Core dependencies for the autonomous trading bot.
+# Tested with Python 3.11.  Install:  pip install -r requirements.txt
+
+alpaca-py==0.43.4        # Broker: account, orders, positions, market data
+ta==0.11.0               # Technical-analysis indicators (RSI, MACD, ATR, ADX, ...)
+pandas>=2.0              # DataFrames for OHLCV + indicator math
+numpy>=1.24              # Numerical backend
+PyYAML>=6.0              # config.yaml parsing
+requests>=2.28           # Finnhub REST client (quotes, candles, news)
+
+# Backtesting engine
+backtrader==1.9.78.123
+tabulate>=0.9            # Pretty-printed tables
+
+# Optional: semantic trade memory (Supermemory).  If you don't configure a
+# SUPERMEMORY_API_KEY the bot runs fine without long-term memory — it just
+# skips the recall/store steps.
+supermemory>=0.1         # pip package: supermemory
+
+# Optional: alternative market-data source used by scripts/macro_snapshot.py
+# (yfinance is only needed if you run that specific script).
+# yfinance>=0.2

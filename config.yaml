@@ -1,0 +1,49 @@
+# ─────────────────────────────────────────────────────────────
+# Autonomous Trading System — Configuration
+# Paper trading account. All risk limits are HARD (code-enforced).
+# Edit this file to tune the system — no code changes needed.
+# ─────────────────────────────────────────────────────────────
+
+account:
+  paper: true                    # paper trading only (safety lock)
+  base_capital: 100000           # reference starting capital ($)
+
+risk:
+  max_risk_per_trade: 0.02       # 2% of portfolio at risk per trade
+  max_concentration: 0.25        # 25% max in a single position
+  max_positions: 5               # max concurrent positions
+  max_total_exposure: 0.90       # never more than 90% invested
+  max_daily_loss: 0.02           # -2% in one day → HALT new entries
+  max_drawdown: 0.08             # -8% from equity high-water → DEFENSIVE
+  atr_stop_mult: 1.5             # stop = entry - 1.5×ATR
+  reward_ratio: 2.0              # target = 2× stop distance (2:1 R/R)
+
+strategy:
+  entry_threshold: 2             # min confluence score (of 5) to qualify
+  require_uptrend: true          # only enter if price > SMA50 (trend filter)
+  require_macd_positive: true    # only enter if MACD histogram > 0
+  universe:                      # symbols the scanner evaluates
+    semis:     [NVDA, AMD, MRVL, AVGO, INTC, MU, WDC, STX, AMAT, KLAC, LRCX, NXPI]
+    mega:      [AAPL, MSFT, GOOGL, AMZN, META, TSLA]
+    high_beta: [COIN, PLTR, MSTR, NFLX]
+    etf:       [SPY, QQQ, IWM, XLK, XLF, SMH, SOXX, XLE]
+
+position_management:
+  trailing_stop_activate_r: 1.0  # start trailing after +1R profit
+  trailing_stop_distance_atr: 1.0  # trail stop by 1 ATR
+  time_stop_days: 15             # exit if flat/no-progress for N days
+  signal_flip_exit: true         # exit if buy thesis invalidates (MACD neg + below SMA)
+  earnings_behavior: HOLD        # HOLD | REDUCE | FLATTEN | ADAPTIVE
+  earnings_guard_days: 1         # not used when HOLD, kept for other modes
+
+regime:
+  # Risk multiplier scales all position sizes. Deterministic from market data.
+  vix_risk_on_threshold: 18      # VIX below this → favors RISK-ON
+  vix_risk_off_threshold: 25     # VIX above this → RISK-OFF
+  spy_trend_lookback: 50         # SPY above/below SMA50 sets broad trend
+
+reporting:
+  log_dir: reports/autonomous    # decision logs + state
+  notify_on_trade: true
+  notify_on_halt: true
+  notify_on_eod: true
