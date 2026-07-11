@@ -12,16 +12,19 @@ Usage:
     python autonomous_engine.py --execute          # full cycle, LIVE submit
     python autonomous_engine.py --phase report     # P&L snapshot only
 """
-import os, sys, json, time, argparse, math
+import os, sys, json, time, argparse, math, logging
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import yaml
+import requests
 import alpaca_client as ac
 import indicators as ind
 import risk_manager as rm
 import finnhub_client as fc
+
+logger = logging.getLogger(__name__)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.yaml")
@@ -255,6 +258,47 @@ def scan_entries(cfg, regime, existing_symbols):
     return candidates
 
 
+# ───────────────────────── earnings catalyst check ─────────────────────────
+
+_earnings_cache: dict[str, tuple[float, str | None]] = {}
+"""symbol → (cache_ts, earnings_date_or_None). TTL = 6h."""
+
+def _check_earnings_within_days(symbol: str, days: int = 5) -> int | None:
+    """Return trading days until next earnings, or None if none within `days`.
+
+    Uses Finnhub's earnings calendar. Cached per-symbol for 6h to avoid
+    rate-limiting (free tier = 60 req/min).
+    """
+    now = time.time()
+    cached = _earnings_cache.get(symbol)
+    if cached and now - cached[0] < 6 * 3600:
+        date_str = cached[1]
+    else:
+        try:
+            key = fc._load_key()
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            future = (datetime.now(timezone.utc) + timedelta(days=days + 2)).strftime("%Y-%m-%d")
+            r = requests.get("https://finnhub.io/api/v1/calendar/earnings", params={
+                "symbol": symbol, "from": today, "to": future, "token": key,
+            }, timeout=10)
+            items = r.json().get("earningsCalendar", [])
+            date_str = items[0]["date"] if items else None
+            _earnings_cache[symbol] = (now, date_str)
+        except Exception as e:
+            logger.debug("Earnings check failed for %s: %s", symbol, e)
+            _earnings_cache[symbol] = (now, None)
+            return None
+
+    if not date_str:
+        return None
+    try:
+        ed = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        diff = (ed - datetime.now(timezone.utc)).days
+        return diff if 0 <= diff <= days else None
+    except Exception:
+        return None
+
+
 # ───────────────────────── position manager (exits) ─────────────────────────
 
 def manage_positions(cfg, state, execute):
@@ -275,6 +319,7 @@ def manage_positions(cfg, state, execute):
             df = ind.generate_signals(df)
             last = df.iloc[-1] if df is not None and not df.empty else None
         except Exception:
+            df = None
             last = None
 
         atr = float(last["atr"]) if last is not None else (entry * 0.03)
@@ -290,11 +335,41 @@ def manage_positions(cfg, state, execute):
         ps["high"] = max(ps.get("high", entry), cur)
 
         # 1) signal-flip exit: thesis invalidated
+        #    Two protections to avoid panic-selling at intraday lows:
+        #    a) Catalyst grace period — if earnings are within 5 trading days,
+        #       suppress the signal-flip and let the ATR stop handle risk.
+        #    b) Multi-day confirmation — require MACD neg + below SMA20 on the
+        #       last TWO bars, not just one. Prevents one-day noise from
+        #       blowing out a position prematurely.
         if mcfg["signal_flip_exit"] and last is not None and macd_diff < 0 and below_sma:
-            actions.append({"symbol": sym, "action": "CLOSE",
-                            "reason": f"Signal flip: MACD neg ({macd_diff:.2f}) & below SMA20",
-                            "price": cur, "unrealized_pct": unrealized_pct})
-            continue
+            # Protection a: earnings catalyst grace period
+            grace_days = mcfg.get("earnings_grace_days", 5)
+            days_to_earnings = _check_earnings_within_days(sym, days=grace_days)
+            if days_to_earnings is not None:
+                actions.append({"symbol": sym, "action": "HOLD",
+                                "reason": f"Signal flip suppressed — earnings in {days_to_earnings}d (catalyst grace period)",
+                                "price": cur, "unrealized_pct": unrealized_pct})
+                # Still update trailing stop below — don't skip with continue
+
+            # Protection b: require 2 consecutive bearish bars
+            elif df is not None and len(df) >= 2:
+                prev = df.iloc[-2]
+                prev_macd_neg = float(prev.get("macd_diff", 0)) < 0
+                prev_below_sma = float(prev["close"]) < float(prev["sma_20"])
+                if prev_macd_neg and prev_below_sma:
+                    actions.append({"symbol": sym, "action": "CLOSE",
+                                    "reason": f"Signal flip confirmed (2 bars): MACD neg ({macd_diff:.2f}) & below SMA20",
+                                    "price": cur, "unrealized_pct": unrealized_pct})
+                    continue
+                else:
+                    actions.append({"symbol": sym, "action": "HOLD",
+                                    "reason": f"Signal flip unconfirmed — waiting 2nd bar (MACD {macd_diff:.2f} neg but prev bar not both bearish)",
+                                    "price": cur, "unrealized_pct": unrealized_pct})
+            else:
+                actions.append({"symbol": sym, "action": "CLOSE",
+                                "reason": f"Signal flip: MACD neg ({macd_diff:.2f}) & below SMA20 (insufficient bars for confirmation)",
+                                "price": cur, "unrealized_pct": unrealized_pct})
+                continue
 
         # 2) trailing stop
         profit = cur - ps["entry"]

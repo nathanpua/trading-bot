@@ -33,6 +33,8 @@ position_management:
   trailing_stop_distance_atr: 1.0  # trail stop by 1 ATR
   time_stop_days: 15             # exit if flat/no-progress for N days
   signal_flip_exit: true         # exit if buy thesis invalidates (MACD neg + below SMA)
+  signal_flip_confirm_bars: 2    # require N consecutive bearish bars before signal-flip exit
+  earnings_grace_days: 5         # suppress signal-flip exit if earnings within N days
   earnings_behavior: HOLD        # HOLD | REDUCE | FLATTEN | ADAPTIVE
   earnings_guard_days: 1         # not used when HOLD, kept for other modes
 
