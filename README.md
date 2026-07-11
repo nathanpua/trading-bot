@@ -224,6 +224,15 @@ The bot is designed to run on a schedule. `run_cycle.sh` is a thin cron wrapper:
 hours**: during closed hours it only reports and places no orders. This makes
 `--execute` safe at any time — the engine is the market-hours authority.
 
+### Running on a VPS with Hermes Agent (scheduled Telegram delivery)
+
+For a production deployment with scheduled reports delivered to your phone,
+see **[docs/VPS-HERMES.md](docs/VPS-HERMES.md)**. It covers the full setup:
+installing [Hermes Agent](https://hermes-agent.nousresearch.com/) on a VPS,
+connecting it to Telegram, and using its `--no-agent` cron mode to run the
+bot's scripts on a schedule and deliver clean monospace tables to your chat —
+no LLM tokens spent on routine runs.
+
 ---
 
 ## 🧪 Backtesting
