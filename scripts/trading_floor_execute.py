@@ -67,6 +67,8 @@ def execute_plan(plan, cfg, dry_run=True):
                                 "current": float(positions[sym]["current_price"])})
             else:
                 try:
+                    for o in ac.get_open_orders_for_symbol(sym):
+                        ac.cancel_order(o["id"])
                     r = ac.close_position(sym)
                     results.append({"action": "CLOSE", "symbol": sym, "status": "executed",
                                     "thesis": thesis, "result": r})
@@ -91,6 +93,9 @@ def execute_plan(plan, cfg, dry_run=True):
                                 "qty": sell_qty, "thesis": thesis})
             else:
                 try:
+                    # Cancel any open orders (bracket legs) holding the shares
+                    for o in ac.get_open_orders_for_symbol(sym):
+                        ac.cancel_order(o["id"])
                     r = ac.place_market_order(sym, side="sell", qty=sell_qty)
                     results.append({"action": act, "symbol": sym, "status": "executed",
                                     "qty": sell_qty, "thesis": thesis, "result": r})
