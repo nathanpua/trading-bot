@@ -71,7 +71,7 @@ def _load_glm_config():
     return key, base_url
 
 
-def glm_chat(messages, model="glm-4.6", temperature=0.3, max_tokens=4096, timeout=180):
+def glm_chat(messages, model="glm-4.7", temperature=0.3, max_tokens=4096, timeout=180):
     """Call the GLM (Z.AI) chat completions API.
 
     Returns the assistant message content string.
@@ -412,7 +412,7 @@ Rules for actions:
 class AITradingAgent:
     """AI-powered trading decision agent using GLM 5.2."""
 
-    def __init__(self, model="glm-4.6", temperature=0.3):
+    def __init__(self, model="glm-4.7", temperature=0.3):
         self.model = model
         self.temperature = temperature
         self.cfg = self._load_config()
@@ -872,8 +872,8 @@ if __name__ == "__main__":
                     help="LIVE submit orders (default: dry run)")
     ap.add_argument("--decide-only", action="store_true",
                     help="Just show the AI decision without executing")
-    ap.add_argument("--model", default="glm-4.6",
-                    help="Model to use (default: glm-4.6)")
+    ap.add_argument("--model", default="glm-4.7",
+                    help="Model to use (default: glm-4.7)")
     ap.add_argument("--temperature", type=float, default=0.3,
                     help="LLM temperature (default: 0.3)")
     args = ap.parse_args()

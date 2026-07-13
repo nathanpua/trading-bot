@@ -15,7 +15,7 @@ if [ -z "${GLM_API_KEY:-}" ] && [ -f ~/.hermes/.env ]; then
 fi
 
 echo "┌─ AI TRADING CYCLE ─ $(date -u '+%Y-%m-%d %H:%M UTC') ─ $(TZ='America/New_York' date '+%H:%M ET')"
-echo "│  Model: GLM 4.6 via Z.AI"
+echo "│  Model: GLM 4.7 via Z.AI"
 python ai_agent.py "$@"
 EXIT=$?
 echo "└─ exit $EXIT"

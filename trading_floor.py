@@ -5,7 +5,7 @@ Multi-Agent Trading Floor — collaborative AI decision system.
 ARCHITECTURE
 ============
 Five specialized analyst agents run in PARALLEL, each examining a different
-facet of the market. A Desk Chief (also GLM 4.6) reads all briefings
+facet of the market. A Desk Chief (also GLM 4.7) reads all briefings
 and produces the final trade plan.
 
     ┌─────────────────────────────────────────────────────────┐
@@ -74,11 +74,11 @@ class AnalystAgent:
 
     Each agent:
     1. Receives the shared market context
-    2. Asks GLM 4.6 to analyze its specific domain
+    2. Asks GLM 4.7 to analyze its specific domain
     3. Returns a structured briefing (dict with assessment + signals)
     """
 
-    def __init__(self, name, role, system_prompt, model="glm-4.6", temperature=0.2):
+    def __init__(self, name, role, system_prompt, model="glm-4.7", temperature=0.2):
         self.name = name
         self.role = role
         self.system_prompt = system_prompt
@@ -281,7 +281,7 @@ Output STRICT JSON only:
 
 
 class MacroAnalyst(AnalystAgent):
-    def __init__(self, model="glm-4.6"):
+    def __init__(self, model="glm-4.7"):
         super().__init__("macro_analyst", "Macro Analyst", MACRO_SYSTEM, model)
 
     def _build_prompt(self, context):
@@ -322,7 +322,7 @@ class MacroAnalyst(AnalystAgent):
 
 
 class NewsAnalyst(AnalystAgent):
-    def __init__(self, model="glm-4.6"):
+    def __init__(self, model="glm-4.7"):
         super().__init__("news_analyst", "News Analyst", NEWS_SYSTEM, model)
 
     def _build_prompt(self, context):
@@ -359,7 +359,7 @@ class NewsAnalyst(AnalystAgent):
 
 
 class TechnicalAnalyst(AnalystAgent):
-    def __init__(self, model="glm-4.6"):
+    def __init__(self, model="glm-4.7"):
         super().__init__("technical_analyst", "Technical Analyst", TECHNICAL_SYSTEM, model)
 
     def _build_prompt(self, context):
@@ -393,7 +393,7 @@ class TechnicalAnalyst(AnalystAgent):
 
 
 class RiskAnalyst(AnalystAgent):
-    def __init__(self, model="glm-4.6"):
+    def __init__(self, model="glm-4.7"):
         super().__init__("risk_analyst", "Risk Manager", RISK_SYSTEM, model)
 
     def _build_prompt(self, context):
@@ -453,7 +453,7 @@ class RiskAnalyst(AnalystAgent):
 
 
 class MemoryAnalyst(AnalystAgent):
-    def __init__(self, model="glm-4.6"):
+    def __init__(self, model="glm-4.7"):
         super().__init__("memory_analyst", "Trade Historian", MEMORY_SYSTEM, model)
 
     def _build_prompt(self, context):
@@ -562,7 +562,7 @@ Output STRICT JSON only — no markdown, no explanation outside JSON:
 class DeskChief:
     """The orchestrator: collects briefings, synthesizes final trade plan."""
 
-    def __init__(self, model="glm-4.6"):
+    def __init__(self, model="glm-4.7"):
         self.model = model
         self.system_prompt = DESK_CHIEF_SYSTEM
 
@@ -658,7 +658,7 @@ class DeskChief:
 class TradingFloor:
     """Multi-agent trading floor: 5 analysts → Desk Chief → Risk Governor → Execute."""
 
-    def __init__(self, model="glm-4.6"):
+    def __init__(self, model="glm-4.7"):
         self.model = model
         self.agents = [
             MacroAnalyst(model),
@@ -965,8 +965,8 @@ if __name__ == "__main__":
                     help="LIVE submit orders (default: dry run)")
     ap.add_argument("--briefings-only", action="store_true",
                     help="Run analysts + show briefings, skip Desk Chief synthesis")
-    ap.add_argument("--model", default="glm-4.6",
-                    help="Model to use (default: glm-4.6)")
+    ap.add_argument("--model", default="glm-4.7",
+                    help="Model to use (default: glm-4.7)")
     args = ap.parse_args()
 
     floor = TradingFloor(model=args.model)

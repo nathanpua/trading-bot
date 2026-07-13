@@ -17,7 +17,7 @@ tabulate>=0.9            # Pretty-printed tables
 # skips the recall/store steps.
 supermemory>=0.1         # pip package: supermemory
 
-# AI decision agent (ai_agent.py) — uses GLM 4.6 via Z.AI API
+# AI decision agent (ai_agent.py) — uses GLM 4.7 via Z.AI API
 # No extra pip packages needed — uses requests (already in deps).
 # Requires GLM_API_KEY in .env or environment.
 

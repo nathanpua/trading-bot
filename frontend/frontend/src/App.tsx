@@ -45,7 +45,7 @@ export default function App() {
         </nav>
         <div className="sidebar-footer">
           <div>Market: {marketOpen === null ? "…" : marketOpen ? "OPEN" : "CLOSED"}</div>
-          <div style={{ marginTop: 4 }}>Alpaca Paper · GLM 4.6</div>
+          <div style={{ marginTop: 4 }}>Alpaca Paper · GLM 4.7</div>
         </div>
       </aside>
       <main className="main">
