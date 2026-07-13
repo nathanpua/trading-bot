@@ -6,7 +6,7 @@ ta==0.11.0               # Technical-analysis indicators (RSI, MACD, ATR, ADX, .
 pandas>=2.0              # DataFrames for OHLCV + indicator math
 numpy>=1.24              # Numerical backend
 PyYAML>=6.0              # config.yaml parsing
-requests>=2.28           # Finnhub REST client (quotes, candles, news)
+requests>=2.28           # Finnhub REST client + GLM API calls
 
 # Backtesting engine
 backtrader==1.9.78.123
@@ -16,6 +16,10 @@ tabulate>=0.9            # Pretty-printed tables
 # SUPERMEMORY_API_KEY the bot runs fine without long-term memory — it just
 # skips the recall/store steps.
 supermemory>=0.1         # pip package: supermemory
+
+# AI decision agent (ai_agent.py) — uses GLM 4.6 via Z.AI API
+# No extra pip packages needed — uses requests (already in deps).
+# Requires GLM_API_KEY in .env or environment.
 
 # Optional: alternative market-data source used by scripts/macro_snapshot.py
 # (yfinance is only needed if you run that specific script).
