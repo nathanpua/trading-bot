@@ -13,16 +13,31 @@ logger = logging.getLogger("dashboard")
 def _get_db():
     if not JOURNAL_DB.exists():
         return None
-    conn = sqlite3.connect(str(JOURNAL_DB))
+    # In Docker, the reports dir may be read-only. Copy to /tmp for read access.
+    db_path = JOURNAL_DB
+    import tempfile, shutil
+    tmp_db = Path(tempfile.gettempdir()) / "trade_journal_readonly.db"
+    try:
+        shutil.copy2(str(db_path), str(tmp_db))
+        db_path = tmp_db
+    except Exception:
+        pass
+    conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_journal():
     """Ensure tables exist (matches bot schema)."""
-    conn = _get_db()
-    if not conn:
-        return
+    # In Docker, create schema in /tmp to avoid write failures on read-only mounts
+    import tempfile, shutil
+    tmp_db = Path(tempfile.gettempdir()) / "trade_journal_readonly.db"
+    if JOURNAL_DB.exists():
+        try:
+            shutil.copy2(str(JOURNAL_DB), str(tmp_db))
+        except Exception:
+            pass
+    conn = sqlite3.connect(str(tmp_db))
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

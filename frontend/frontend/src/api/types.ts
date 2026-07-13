@@ -132,3 +132,51 @@ export interface MemoryResult {
   similarity: number;
   metadata: Record<string, unknown>;
 }
+
+// ── AI Trading Floor types ──
+
+export interface AICycleAction {
+  action: string;
+  symbol?: string;
+  thesis?: string;
+  conviction?: string;
+  risk_pct?: number;
+  supporting_analysts?: string[];
+}
+
+export interface AICycleBriefing {
+  agent: string;
+  role?: string;
+  status: string;
+  assessment?: string;
+  confidence?: string;
+  error?: string;
+  [key: string]: unknown;
+}
+
+export interface AICycle {
+  ts: string;
+  model: string;
+  elapsed_seconds?: number;
+  mode: string;
+  equity: number;
+  position_count: number;
+  candidate_count: number;
+  regime: string;
+  actions: AICycleAction[];
+  summary: string;
+  confidence: string;
+  analysis: {
+    market_read?: string;
+    portfolio_assessment?: string;
+    key_consensus?: string;
+    key_disagreement?: string;
+    risk_outlook?: string;
+  };
+  briefings: Record<string, AICycleBriefing>;
+  execution: {
+    executed: boolean;
+    results: Array<Record<string, unknown>>;
+  };
+  report: string;
+}
