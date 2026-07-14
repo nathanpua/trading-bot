@@ -11,6 +11,7 @@ export function Dashboard() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [equity, setEquity] = useState<EquityPoint[]>([]);
   const [cycles, setCycles] = useState<Cycle[]>([]);
+  const [aiReport, setAiReport] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -18,10 +19,12 @@ export function Dashboard() {
       api.portfolio(),
       api.equityHistory(),
       api.cycles(5),
-    ]).then(([p, e, c]: any) => {
+      api.aiCycleLatest(),
+    ]).then(([p, e, c, ai]: any) => {
       setPortfolio(p);
       setEquity(e as EquityPoint[]);
       setCycles(c as Cycle[]);
+      if (ai && ai.report) setAiReport(ai);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
@@ -140,7 +143,13 @@ export function Dashboard() {
         </div>
       </div>
 
-      {latestCycle && (
+      {aiReport && (
+        <div className="section">
+          <div className="section-title">Latest AI Trading Floor Report</div>
+          <div className="cycle-report">{aiReport.report}</div>
+        </div>
+      )}
+      {!aiReport && latestCycle && (
         <div className="section">
           <div className="section-title">Latest Cycle Report</div>
           <div className="cycle-report">{latestCycle.report}</div>

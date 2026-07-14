@@ -720,6 +720,9 @@ class TradingFloor:
         # 5. Execute
         execution = self._execute(valid_actions, dry_run)
 
+        # 5b. Record trades to journal DB (for dashboard stats)
+        self._record_to_journal(context, plan, execution, dry_run)
+
         # 6. Build report + log
         report = self._build_report(context, briefings, plan, execution, timestamp)
         elapsed = time.time() - ts_start
@@ -772,6 +775,79 @@ class TradingFloor:
             logger.error("Execution failed: %s", e)
             return {"executed": False, "dry_run": dry_run,
                     "results": [{"status": "error", "error": str(e)}]}
+
+    def _record_to_journal(self, context, plan, execution, dry_run):
+        """Record executed trades and cycle summary to the journal DB.
+
+        This populates the dashboard's Trades and Analysis tabs.
+        """
+        try:
+            import trade_journal as tj
+            tj.init_db()
+        except Exception as e:
+            logger.warning("Journal init failed: %s", e)
+            return
+
+        regime = context.get("regime", {}).get("regime", "neutral")
+        acct = context.get("account", {})
+        exp = context.get("exposure", {})
+
+        # Record cycle summary
+        try:
+            import trade_journal as tj
+            tj.record_cycle(
+                session="ai_floor",
+                regime=regime,
+                equity=acct.get("equity", 0),
+                cash_pct=exp.get("cash_pct", 0),
+                deployed_pct=exp.get("pct_of_portfolio", 0),
+                position_count=exp.get("position_count", 0),
+                actions=plan.get("actions", []),
+                report=plan.get("summary", ""),
+            )
+        except Exception as e:
+            logger.warning("Journal cycle record failed: %s", e)
+
+        # Record each executed trade action
+        results = execution.get("results", [])
+        for r in results:
+            status = r.get("status", "")
+            act = r.get("action", "").upper()
+            sym = r.get("symbol", "")
+
+            # Only record actual submissions (not dry runs or skips)
+            if status not in ("submitted", "executed"):
+                continue
+            if not sym:
+                continue
+
+            try:
+                import trade_journal as tj
+                if act == "BUY":
+                    tj.record_trade(
+                        symbol=sym, side="BUY",
+                        qty=r.get("qty"),
+                        entry_price=r.get("entry"),
+                        stop_price=r.get("stop"),
+                        target_price=r.get("target"),
+                        position_pct=r.get("pos_pct"),
+                        risk_pct=r.get("risk_pct"),
+                        thesis=r.get("thesis", plan.get("summary", "")),
+                        strategy="ai_multi_agent",
+                        regime=regime,
+                        status="open",
+                    )
+                elif act in ("SELL", "CLOSE"):
+                    tj.record_trade(
+                        symbol=sym, side=act,
+                        qty=r.get("qty"),
+                        thesis=r.get("thesis", ""),
+                        strategy="ai_multi_agent",
+                        regime=regime,
+                        status="closed",
+                    )
+            except Exception as e:
+                logger.warning("Journal trade record failed for %s: %s", sym, e)
 
     def _build_report(self, context, briefings, plan, execution, timestamp):
         """Build a comprehensive trading floor report."""

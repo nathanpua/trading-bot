@@ -5,7 +5,7 @@ import json
 import sqlite3
 import logging
 from pathlib import Path
-from ..config import JOURNAL_DB, CYCLE_DIR
+from ..config import JOURNAL_DB, CYCLE_DIR, REPORTS_DIR
 
 logger = logging.getLogger("dashboard")
 
@@ -168,9 +168,10 @@ def get_cycles(limit=20):
 
 
 def get_equity_history():
-    """Build equity history from cycle reports + Alpaca portfolio history."""
+    """Build equity history from cycle reports (both deterministic + AI)."""
     history = []
-    # From cycle reports
+
+    # Deterministic cycles
     if CYCLE_DIR.exists():
         for f in sorted(CYCLE_DIR.glob("cycle_*.json")):
             try:
@@ -183,6 +184,39 @@ def get_equity_history():
                     })
             except Exception:
                 continue
+
+    # AI trading floor cycles
+    tf_dir = REPORTS_DIR / "trading_floor"
+    if tf_dir.exists():
+        for f in sorted(tf_dir.glob("cycle_*.json")):
+            try:
+                data = json.loads(f.read_text())
+                eq = data.get("context_summary", {}).get("equity")
+                if eq:
+                    history.append({
+                        "ts": data.get("ts", ""),
+                        "equity": eq,
+                        "source": "ai_cycle",
+                    })
+            except Exception:
+                continue
+
+    # Single-agent AI cycles
+    ai_dir = REPORTS_DIR / "ai_cycles"
+    if ai_dir.exists():
+        for f in sorted(ai_dir.glob("cycle_*.json")):
+            try:
+                data = json.loads(f.read_text())
+                eq = data.get("context_summary", {}).get("equity")
+                if eq:
+                    history.append({
+                        "ts": data.get("ts", ""),
+                        "equity": eq,
+                        "source": "ai_cycle",
+                    })
+            except Exception:
+                continue
+
     # Deduplicate by timestamp
     seen = set()
     deduped = []
