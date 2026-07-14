@@ -132,10 +132,13 @@ function SymbolDetail({ result }: { result: ScanResult }) {
 
 export function Strategies() {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
+  const [universe, setUniverse] = useState<Record<string, string[]>>({});
+  const [totalSymbols, setTotalSymbols] = useState(0);
   const [scanData, setScanData] = useState<ScanResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [symbolQuery, setSymbolQuery] = useState("");
+  const [scanLimit, setScanLimit] = useState(30);
 
   const loadStrategies = useCallback(() => {
     api.strategies().then((d: any) => {
@@ -143,22 +146,28 @@ export function Strategies() {
     }).catch(() => {});
   }, []);
 
-  const runScan = useCallback((limit = 20) => {
+  const loadUniverse = useCallback(() => {
+    api.universe().then((d: any) => {
+      setUniverse(d.groups || {});
+      setTotalSymbols(d.total_symbols || 0);
+      setScanLimit(d.total_symbols || 30);
+    }).catch(() => {});
+  }, []);
+
+  const runScan = useCallback((limit?: number) => {
     setScanning(true);
-    api.strategyScan(limit).then((d: any) => {
+    const actualLimit = limit ?? scanLimit ?? 30;
+    api.strategyScan(actualLimit).then((d: any) => {
       setScanData(d);
       setScanning(false);
     }).catch(() => setScanning(false));
-  }, []);
+  }, [scanLimit]);
 
   const scanSymbol = useCallback(() => {
     if (!symbolQuery.trim()) return;
     setScanning(true);
     api.strategyScanSymbol(symbolQuery.trim().toUpperCase()).then((d: any) => {
-      if (d.error) {
-        setScanning(false);
-        return;
-      }
+      if (d.error) { setScanning(false); return; }
       setScanData({
         results: [d],
         symbols_scanned: 1,
@@ -167,8 +176,7 @@ export function Strategies() {
           bullish: d.composite_signal === "bullish" ? 1 : 0,
           bearish: d.composite_signal === "bearish" ? 1 : 0,
           neutral: d.composite_signal === "neutral" ? 1 : 0,
-          top_bullish: [],
-          top_bearish: [],
+          top_bullish: [], top_bearish: [],
         },
       });
       setScanning(false);
@@ -177,13 +185,15 @@ export function Strategies() {
 
   useEffect(() => {
     loadStrategies();
-    runScan(20);
+    loadUniverse();
+    runScan(30);
     setLoading(false);
-  }, [loadStrategies, runScan]);
+  }, [loadStrategies, loadUniverse, runScan]);
 
   if (loading) return <div className="loading">Loading strategies…</div>;
 
   const summary = scanData?.summary;
+  const universeGroups = Object.entries(universe);
 
   return (
     <>
@@ -212,6 +222,33 @@ export function Strategies() {
         </div>
       </div>
 
+      {/* Universe display */}
+      <div className="section">
+        <div className="section-title">
+          Trading Universe ({totalSymbols} symbols)
+          <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-dim)" }}>
+            Edit in config.yaml → strategy.universe
+          </span>
+        </div>
+        <div className="universe-grid">
+          {universeGroups.map(([group, symbols]) => (
+            <div key={group} className="card universe-group-card" style={{ padding: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <span style={{ fontFamily: "var(--font-display)", fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  {group}
+                </span>
+                <span className="badge badge-neutral">{symbols.length}</span>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                {symbols.map((sym) => (
+                  <span key={sym} className="universe-symbol">{sym}</span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* Scan controls */}
       <div className="section">
         <div className="section-title">Symbol Scanner</div>
@@ -224,8 +261,8 @@ export function Strategies() {
             onKeyDown={(e) => e.key === "Enter" && scanSymbol()}
           />
           <button className="btn" onClick={scanSymbol} disabled={scanning}>Scan Symbol</button>
-          <button className="btn" onClick={() => runScan(20)} disabled={scanning} style={{ marginLeft: 4 }}>
-            {scanning ? "Scanning…" : "Scan Universe"}
+          <button className="btn" onClick={() => runScan()} disabled={scanning} style={{ marginLeft: 4 }}>
+            {scanning ? "Scanning…" : `Scan Universe (${totalSymbols})`}
           </button>
         </div>
 

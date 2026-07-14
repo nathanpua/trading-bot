@@ -20,6 +20,8 @@ export const api = {
   strategies: () => fetchJSON("/api/strategies"),
   strategyScan: (limit = 20) => fetchJSON(`/api/strategies/scan?limit=${limit}`),
   strategyScanSymbol: (sym: string) => fetchJSON(`/api/strategies/scan/${sym}`),
+  universe: () => fetchJSON("/api/universe"),
+  universeSymbols: () => fetchJSON("/api/universe/symbols"),
   stats: () => fetchJSON("/api/analysis/stats"),
   memorySearch: (q: string, limit = 5) =>
     fetchJSON(`/api/analysis/memory?q=${encodeURIComponent(q)}&limit=${limit}`),
