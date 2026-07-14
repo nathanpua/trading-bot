@@ -526,9 +526,11 @@ DECISION RULES:
 - Weight the Risk Manager's opinion highest on position sizing and exits.
 - Weight the Technical Analyst highest on entry/exit timing.
 - Weight the News Analyst highest on catalyst-driven moves.
+- Weight the Multi-Strategy Alpha Analysis as a systematic signal confirmation layer — use it to confirm or question analyst opinions.
 - Weight the Trade Historian's pattern warnings heavily — if we're repeating a known mistake, flag it.
 - Maximum 3 new BUYs per cycle. Prefer fewer, higher-conviction trades.
 - If analysts disagree, be conservative.
+- When multiple strategies agree (e.g. 5/7 bullish), this is high-conviction. When strategies disagree, lower conviction.
 
 USER PREFERENCES (CRITICAL):
 - The user PREFERS to hold through earnings when profitable. Do NOT suggest flattening before earnings as a blanket rule.
@@ -597,6 +599,25 @@ class DeskChief:
         if context.get("candidates"):
             cand_text = ", ".join(f"{c['symbol']}({c['path']}, {c['buy_score']}/5)" for c in context["candidates"][:8])
             lines.append(f"SCANNER CANDIDATES: {cand_text}")
+
+        # Multi-strategy alpha analysis
+        strat_scan = context.get("strategy_scan", {})
+        if strat_scan.get("status") == "ok" and strat_scan.get("assessments"):
+            lines.append("\nMULTI-STRATEGY ALPHA ANALYSIS:")
+            for a in strat_scan["assessments"]:
+                if a.get("error"):
+                    lines.append(f"  {a['symbol']:5} [ERROR: {a['error'][:40]}]")
+                    continue
+                sym = a["symbol"]
+                score = a["composite_score"]
+                signal = a["composite_signal"]
+                bull = a.get("bullish_strategies", 0)
+                bear = a.get("bearish_strategies", 0)
+                total = a.get("total_strategies", 0)
+                lines.append(f"  {sym:5} composite={score:+.2f} ({signal}) "
+                             f"bull={bull}/{total} bear={bear}/{total}")
+                for ts in a.get("top_signals", []):
+                    lines.append(f"        {ts['strategy']:25} {ts['score']:+.2f} {ts['signal']}")
 
         # Analyst briefings
         lines.append("\n" + "="*60)

@@ -17,6 +17,9 @@ export const api = {
   cycles: (limit = 20) => fetchJSON(`/api/cycles?limit=${limit}`),
   aiCycles: (limit = 20) => fetchJSON(`/api/ai-cycles?limit=${limit}`),
   aiCycleLatest: () => fetchJSON("/api/ai-cycles/latest"),
+  strategies: () => fetchJSON("/api/strategies"),
+  strategyScan: (limit = 20) => fetchJSON(`/api/strategies/scan?limit=${limit}`),
+  strategyScanSymbol: (sym: string) => fetchJSON(`/api/strategies/scan/${sym}`),
   stats: () => fetchJSON("/api/analysis/stats"),
   memorySearch: (q: string, limit = 5) =>
     fetchJSON(`/api/analysis/memory?q=${encodeURIComponent(q)}&limit=${limit}`),

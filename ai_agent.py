@@ -180,6 +180,9 @@ def build_market_context(cfg):
     # 5. Scanner — entry candidates (deterministic pre-filter)
     ctx["candidates"] = _scan_candidates(cfg, held_symbols)
 
+    # 5b. Multi-strategy analysis (alpha zoo)
+    ctx["strategy_scan"] = _scan_strategies(held_symbols, ctx["candidates"])
+
     # 6. News — market headlines + per-position company news
     ctx["news"] = _gather_news(held_symbols, [c["symbol"] for c in ctx["candidates"][:3]])
 
@@ -284,6 +287,18 @@ def _scan_candidates(cfg, held_symbols):
     except Exception as e:
         logger.debug("Scanner failed: %s", e)
         return []
+
+
+def _scan_strategies(held_symbols, candidates):
+    """Run multi-strategy alpha analysis on positions + candidates."""
+    try:
+        from strategy_engine import scan_for_context
+        candidate_syms = [c["symbol"] for c in candidates[:5]] if candidates else []
+        result = scan_for_context(held_symbols, candidate_syms, max_symbols=10)
+        return result
+    except Exception as e:
+        logger.debug("Strategy scan failed: %s", e)
+        return {"status": "error", "error": str(e)[:80], "assessments": []}
 
 
 def _gather_news(held_symbols, candidate_symbols, max_headlines=20):
