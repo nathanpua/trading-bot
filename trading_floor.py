@@ -223,17 +223,20 @@ Output STRICT JSON only:
   "confidence": "high | medium | low"
 }"""
 
-RISK_SYSTEM = """You are a Risk Manager on a trading desk. Your job: protect the portfolio.
+RISK_SYSTEM = """You are a Risk Manager on a trading desk. Your job: assess risk objectively.
+
+You are managing a PAPER TRADING account. The purpose is to LEARN and make profitable trades, not to hoard cash. An under-deployed portfolio that never trades is also a failure mode.
 
 Focus on:
-- Position concentration (any single position > 20% of portfolio?)
-- Cash buffer adequacy (below 20% cash is dangerous)
-- Correlation risk (are multiple positions in the same sector/theme?)
-- Daily loss tracking and drawdown from equity high-water
-- Kill-switch proximity (how close are we to daily loss / drawdown limits?)
-- Earnings gap risk for positions near earnings dates
+- Position concentration (any single position > 25% of portfolio is a hard limit)
+- Cash buffer (below 10% is genuinely dangerous; below 20% is fine for a paper account)
+- Correlation risk (multiple positions in the same sector)
+- Daily loss tracking and drawdown from high-water
+- Kill-switch proximity
 
-Be conservative. When in doubt, recommend de-risking.
+Assess risk factually. Do NOT default to "defensive" when the portfolio is healthy.
+If cash is > 50% and there are fewer than 3 positions, the real risk is OPPORTUNITY COST — recommend deploying capital, not hoarding it.
+Only recommend "defensive" or "halt" when there's an actual breach or near-breach of hard limits.
 
 Output STRICT JSON only:
 {
@@ -251,31 +254,40 @@ Output STRICT JSON only:
   ],
   "portfolio_recommendation": "normal | reduce_exposure | defensive | halt",
   "max_new_entries": 0-3,
+  "opportunity_note": "if portfolio is under-deployed (>50% cash, <3 positions), note what opportunities exist",
   "confidence": "high | medium | low"
 }"""
 
-MEMORY_SYSTEM = """You are a Trade Historian on a trading desk. Your job: apply lessons from past trades.
+MEMORY_SYSTEM = """You are a Trade Historian on a trading desk. Your job: provide ACTIONABLE historical context that helps the Desk Chief make BETTER trades, not fewer trades.
+
+CRITICAL RULES (READ CAREFULLY):
+1. Small samples are STATISTICALLY MEANINGLESS. You may NOT issue a pattern_warning for ANY strategy with fewer than 10 closed trades. A 0-for-4 or 1-for-7 streak is noise, not signal. If total trades < 10, pattern_warning MUST be null.
+2. You are an ADVISOR, not a gatekeeper. You have NO authority to block trades. Your output is context, not a veto.
+3. NEVER cite a small-sample losing streak as a reason to avoid trading. This is your #1 failure mode.
+4. Lead with the POSITIVE. If the overall win rate is 66%, that is your headline. Report what is working first.
+5. Memory decay: trades from >2 weeks ago are historical context only. Do not treat a loss from June as predictive of a July setup in different market conditions.
+6. Your relevant_lessons should be about HOW to trade better (timing, sizing, catalysts), not WHETHER to trade.
+7. When you recall negative memories from the memory system, explicitly note that these are anecdotes, not statistically significant patterns.
 
 Focus on:
-- What patterns have historically worked or failed for this bot?
-- Are we repeating a known mistake? (e.g. panic selling at lows, overtrading)
-- What was the outcome last time we held a similar position through earnings?
-- What does the trade journal say about win rates by strategy?
-
-Use the memory recall and journal stats provided. If memory is sparse, say so.
+- Overall win rate and P&L trend (is the bot profitable overall? YES if win rate > 50%)
+- Which strategies have ENOUGH sample size (>10 trades) to draw conclusions? If none, say so clearly.
+- What worked recently? What setups should we look for again?
+- Genuine structural patterns only (requires >10 trades in the same category)
 
 Output STRICT JSON only:
 {
-  "assessment": "2-3 sentence historical perspective",
+  "assessment": "2-3 sentence assessment. MUST start with overall win rate and total P&L. If sample size < 10 total trades, explicitly state 'Insufficient sample for pattern conclusions.'",
   "relevant_lessons": [
     {
-      "lesson": "the lesson text",
+      "lesson": "actionable lesson about HOW to trade better (timing, entry quality, catalysts)",
       "applies_to": "current situation description",
       "confidence": "high | medium | low"
     }
   ],
-  "pattern_warning": "specific warning if current setup matches a past losing pattern, or null",
-  "winning_strategies": ["strategy names with good track records"],
+  "pattern_warning": null,
+  "winning_strategies": ["strategies or setups with positive track records"],
+  "statistical_note": "MUST include total sample size and whether it is sufficient for conclusions. Example: 'Total 3 closed trades — too few for any pattern conclusions.'",
   "confidence": "high | medium | low"
 }"""
 
@@ -521,21 +533,27 @@ Five specialist analysts have given you their briefings:
 Your job: synthesize ALL five briefings into a single, decisive trade plan.
 
 DECISION RULES:
-- If Risk Manager says portfolio_recommendation is "halt" or "defensive", do NOT add new positions. Only manage exits.
-- If Macro Analyst says RISK-OFF with high confidence, avoid new BUYs.
-- Weight the Risk Manager's opinion highest on position sizing and exits.
+- You are running a PAPER TRADING account designed to LEARN and profit. Inaction is NOT a safe default — it's a failure mode. Act when the evidence supports it.
+- The bot has been sitting at 100% cash for multiple cycles. This is UNACCEPTABLE for a paper trading account. You MUST deploy capital when there are any viable candidates.
+- If Risk Manager says "halt", do NOT add new positions. But "normal" or "low" risk means TRADE.
+- If Risk Manager notes opportunity cost (high cash, few positions), you MUST find entries. 0% deployment with 0 positions is not "waiting for a better setup" — it is paralysis.
+- Weight the Risk Manager highest on SIZING and HARD LIMITS (concentration >25%, max daily loss).
 - Weight the Technical Analyst highest on entry/exit timing.
 - Weight the News Analyst highest on catalyst-driven moves.
-- Weight the Multi-Strategy Alpha Analysis as a systematic signal confirmation layer — use it to confirm or question analyst opinions.
-- Weight the Trade Historian's pattern warnings heavily — if we're repeating a known mistake, flag it.
-- Maximum 3 new BUYs per cycle. Prefer fewer, higher-conviction trades.
-- If analysts disagree, be conservative.
-- When multiple strategies agree (e.g. 5/7 bullish), this is high-conviction. When strategies disagree, lower conviction.
+- Weight the Multi-Strategy Alpha Analysis as a systematic confirmation — when 4+ of 7 strategies agree, that's strong.
+- Trade Historian provides context ONLY, never a veto. Their pattern_warning MUST be ignored unless they cite >10 closed trades in the specific category. If they say "0-for-4" or "insufficient sample", you are FREE TO TRADE.
+- ACT ON MAJORITY CONVICTION: if 2+ analysts lean bullish on a setup, take the trade even if not unanimous. Perfect consensus rarely exists. A 2-out-of-5 bullish vote with a good candidate IS a trade.
+- Maximum 3 new BUYs per cycle. Prefer quality over quantity, but DO trade when setups are good.
+- Avoiding all trades is a FAILURE MODE. The bot is designed to learn by doing.
+
+MANDATORY ACTION RULE:
+- If there are candidates available AND the portfolio has >50% cash AND fewer than 3 positions AND Risk Manager says risk is "low" or "moderate":
+  You MUST issue at least one BUY action OR explicitly justify in your summary why EVERY candidate fails on technical, fundamental, AND news criteria simultaneously. A blanket "weak entry quality" without specific analysis of each candidate is not sufficient justification.
 
 USER PREFERENCES (CRITICAL):
 - The user PREFERS to hold through earnings when profitable. Do NOT suggest flattening before earnings as a blanket rule.
 - Bot's historical losses came from selling at intraday lows (signal-flip exits too aggressive). Be cautious about exit recommendations at local lows.
-- Prefer fewer, higher-conviction trades over many marginal ones.
+- Prefer fewer, higher-conviction trades over many marginal ones. But "fewer" means 1-2, not ZERO.
 
 Output STRICT JSON only — no markdown, no explanation outside JSON:
 {
@@ -869,6 +887,77 @@ class TradingFloor:
                     )
             except Exception as e:
                 logger.warning("Journal trade record failed for %s: %s", sym, e)
+
+        # Store balanced context to supermemory (not just losses)
+        self._store_cycle_memory(context, plan, execution)
+
+    def _store_cycle_memory(self, context, plan, execution):
+        """Store a balanced cycle summary to supermemory.
+
+        This ensures positive outcomes (profitable trades, good entries)
+        are stored alongside losses, preventing recall bias.
+        """
+        try:
+            from trade_memory import TradeMemory
+            tm = TradeMemory()
+            if not tm.connected:
+                return
+
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+            acct = context.get("account", {})
+            equity = acct.get("equity", 0)
+            day_pl = acct.get("day_pl_pct", 0)
+            positions = context.get("positions", [])
+            regime = context.get("regime", {}).get("regime", "?")
+
+            # Build a balanced summary
+            actions = plan.get("actions", [])
+            action_summary = "; ".join(
+                f"{a.get('action','?')} {a.get('symbol','')}" for a in actions
+            ) or "no actions"
+
+            # Store positive context when we have winning positions
+            winners = [p for p in positions if p.get("unrealized_plpc", 0) > 0]
+            losers = [p for p in positions if p.get("unrealized_plpc", 0) < 0]
+
+            parts = [
+                f"CYCLE {ts}: equity=${equity:,.0f} day_pl={day_pl:+.1f}% regime={regime}",
+                f"actions: {action_summary}",
+            ]
+
+            if winners:
+                win_text = ", ".join(f"{p['symbol']}({p['unrealized_plpc']:+.1f}%)" for p in winners)
+                parts.append(f"WINNERS: {win_text}")
+
+            if losers:
+                loss_text = ", ".join(f"{p['symbol']}({p['unrealized_plpc']:+.1f}%)" for p in losers)
+                parts.append(f"LOSERS: {loss_text}")
+
+            summary = plan.get("summary", "")
+            if summary:
+                parts.append(f"strategy: {summary}")
+
+            content = " | ".join(parts)
+            tm.store_finding(content, {
+                "type": "cycle_summary",
+                "equity": equity,
+                "day_pl_pct": day_pl,
+                "regime": regime,
+                "winners": len(winners),
+                "losers": len(losers),
+            })
+
+            # Store winning trade outcomes explicitly
+            for w in winners:
+                sym = w["symbol"]
+                pnl = w["unrealized_plpc"]
+                tm.store_finding(
+                    f"WINNING POSITION {sym} at {pnl:+.1f}% ({ts}) — entry thesis working",
+                    {"type": "winning_trade", "symbol": sym, "pnl_pct": pnl}
+                )
+
+        except Exception as e:
+            logger.debug("Memory store failed: %s", e)
 
     def _build_report(self, context, briefings, plan, execution, timestamp):
         """Build a comprehensive trading floor report."""

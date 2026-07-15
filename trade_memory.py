@@ -143,7 +143,8 @@ class TradeMemory:
         lines = ["=== MEMORY RECALL ==="]
 
         # Recent findings (last cycle summaries + analyst insights)
-        recent = self.recall("recent market analysis and trades", limit=5)
+        # Use a query that explicitly seeks BOTH wins and losses
+        recent = self.recall("recent trades outcomes wins losses analysis", limit=5)
         if recent:
             lines.append("RECENT FINDINGS:")
             for r in recent:

@@ -277,16 +277,88 @@ def _assess_regime(cfg):
 
 
 def _scan_candidates(cfg, held_symbols):
-    """Run the deterministic scanner to pre-filter entry candidates."""
+    """Run the deterministic scanner to pre-filter entry candidates.
+
+    Uses the strict scanner first, then falls back to a relaxed scan that
+    surfaces near-miss candidates (uptrend + at least one positive indicator)
+    so the AI Desk Chief has more to evaluate. The AI makes the final call.
+    """
     try:
         from autonomous_engine import scan_entries
+        import indicators as ind
         regime = {"risk_multiplier": 1.0}
         candidates = scan_entries(cfg, regime, held_symbols)
+
+        # If strict scanner found few candidates, add relaxed-scan candidates
+        if len(candidates) < 3:
+            strict_syms = {c["symbol"] for c in candidates}
+            relaxed = _scan_relaxed(cfg, held_symbols | strict_syms)
+            for r in relaxed:
+                if r["symbol"] not in strict_syms:
+                    r["path"] = r["path"] + "_relaxed"
+                    candidates.append(r)
+
         # Cap to top 8 for the AI context window
         return candidates[:8]
     except Exception as e:
         logger.debug("Scanner failed: %s", e)
         return []
+
+
+def _scan_relaxed(cfg, exclude_symbols):
+    """Relaxed scanner: surface uptrending names with at least one positive signal.
+
+    These are NEAR-MISS candidates for the AI to evaluate — they don't meet
+    the strict confluence/momentum thresholds but have constructive setups.
+    """
+    scfg = cfg["strategy"]
+    universe = sorted({s for syms in scfg["universe"].values() for s in syms})
+    relaxed = []
+
+    for sym in universe:
+        if sym in exclude_symbols:
+            continue
+        try:
+            df = ind.add_all_indicators(ac.get_bars(sym, "1Day", 120))
+            df = ind.generate_signals(df)
+            if df is None or df.empty:
+                continue
+            last = df.iloc[-1]
+            sell_score = int(last.get("sell_score", 0))
+            if sell_score >= 2:
+                continue  # bearish confluence — skip even in relaxed mode
+
+            buy_score = int(last.get("buy_score", 0))
+            macd_diff = float(last.get("macd_diff", 0))
+            rsi = float(last.get("rsi", 50))
+            adx = float(last.get("adx", 0))
+            uptrend = float(last["close"]) > float(last["sma_50"])
+            atr = float(last["atr"])
+
+            if not uptrend:
+                continue
+
+            # Near-miss: uptrend + at least one positive indicator
+            positives = sum([
+                buy_score >= scfg.get("entry_threshold", 3) - 1,  # close to threshold
+                macd_diff > 0,
+                40 <= rsi <= 75,
+                adx >= 20,
+            ])
+            if positives < 2:
+                continue
+
+            path = "near_miss"
+            relaxed.append({
+                "symbol": sym, "buy_score": buy_score, "adx": adx,
+                "rsi": rsi, "price": float(last["close"]), "atr": atr,
+                "path": path,
+            })
+        except Exception:
+            continue
+
+    relaxed.sort(key=lambda c: (c["adx"], c["buy_score"]), reverse=True)
+    return relaxed[:5]
 
 
 def _scan_strategies(held_symbols, candidates):
@@ -344,7 +416,8 @@ def _recall_memory(held_symbols):
             return {"status": "disconnected"}
 
         memory = {"recent": [], "positions": {}, "lessons": []}
-        recent = tm.recall("recent market analysis and trades", limit=5)
+        # Balanced query: seek both wins and losses, not just problems
+        recent = tm.recall("recent trades outcomes wins losses", limit=5)
         memory["recent"] = [r["memory"][:150] for r in recent]
 
         for sym in held_symbols:
