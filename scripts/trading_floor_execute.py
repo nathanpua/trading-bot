@@ -60,18 +60,32 @@ def execute_plan(plan, cfg, dry_run=True):
                 results.append({"action": "CLOSE", "symbol": sym, "status": "skipped",
                                 "reason": "not held"})
                 continue
+            pos = positions[sym]
+            exit_price = float(pos["current_price"])
+            entry_price = float(pos["avg_entry_price"])
+            sell_qty = float(pos["qty"])
+            pnl_dollars = float(pos.get("unrealized_pl", 0))
+            pnl_pct = float(pos.get("unrealized_plpc", 0)) * 100
             if dry_run:
                 results.append({"action": "CLOSE", "symbol": sym, "status": "dry_run",
                                 "thesis": thesis,
-                                "qty": float(positions[sym]["qty"]),
-                                "current": float(positions[sym]["current_price"])})
+                                "qty": sell_qty,
+                                "entry_price": entry_price,
+                                "exit_price": exit_price,
+                                "pnl_dollars": pnl_dollars,
+                                "pnl_pct": pnl_pct})
             else:
                 try:
                     for o in ac.get_open_orders_for_symbol(sym):
                         ac.cancel_order(o["id"])
                     r = ac.close_position(sym)
                     results.append({"action": "CLOSE", "symbol": sym, "status": "executed",
-                                    "thesis": thesis, "result": r})
+                                    "thesis": thesis, "qty": sell_qty,
+                                    "entry_price": entry_price,
+                                    "exit_price": exit_price,
+                                    "pnl_dollars": pnl_dollars,
+                                    "pnl_pct": pnl_pct,
+                                    "result": r})
                 except Exception as e:
                     results.append({"action": "CLOSE", "symbol": sym, "status": "error",
                                     "error": str(e)[:100]})
@@ -88,9 +102,20 @@ def execute_plan(plan, cfg, dry_run=True):
                 sell_qty = float(pos["qty"])
             else:
                 sell_qty = min(float(qty), float(pos["qty"]))
+            exit_price = float(pos["current_price"])
+            entry_price = float(pos["avg_entry_price"])
+            # Pro-rate P&L for partial sells
+            full_qty = float(pos["qty"])
+            pnl_dollars = float(pos.get("unrealized_pl", 0)) * (sell_qty / full_qty) if full_qty else 0
+            cost_basis = entry_price * sell_qty
+            pnl_pct = ((exit_price - entry_price) / entry_price * 100) if entry_price else 0
             if dry_run:
                 results.append({"action": act, "symbol": sym, "status": "dry_run",
-                                "qty": sell_qty, "thesis": thesis})
+                                "qty": sell_qty, "thesis": thesis,
+                                "entry_price": entry_price,
+                                "exit_price": exit_price,
+                                "pnl_dollars": pnl_dollars,
+                                "pnl_pct": pnl_pct})
             else:
                 try:
                     # Cancel any open orders (bracket legs) holding the shares
@@ -98,7 +123,12 @@ def execute_plan(plan, cfg, dry_run=True):
                         ac.cancel_order(o["id"])
                     r = ac.place_market_order(sym, side="sell", qty=sell_qty)
                     results.append({"action": act, "symbol": sym, "status": "executed",
-                                    "qty": sell_qty, "thesis": thesis, "result": r})
+                                    "qty": sell_qty, "thesis": thesis,
+                                    "entry_price": entry_price,
+                                    "exit_price": exit_price,
+                                    "pnl_dollars": pnl_dollars,
+                                    "pnl_pct": pnl_pct,
+                                    "result": r})
                 except Exception as e:
                     results.append({"action": act, "symbol": sym, "status": "error",
                                     "error": str(e)[:100]})

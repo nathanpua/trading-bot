@@ -877,13 +877,13 @@ class TradingFloor:
                         status="open",
                     )
                 elif act in ("SELL", "CLOSE"):
-                    tj.record_trade(
-                        symbol=sym, side=act,
-                        qty=r.get("qty"),
+                    tj.close_trade(
+                        symbol=sym,
+                        exit_price=r.get("exit_price"),
+                        pnl_dollars=r.get("pnl_dollars"),
+                        pnl_pct=r.get("pnl_pct"),
+                        outcome="closed",
                         thesis=r.get("thesis", ""),
-                        strategy="ai_multi_agent",
-                        regime=regime,
-                        status="closed",
                     )
             except Exception as e:
                 logger.warning("Journal trade record failed for %s: %s", sym, e)
