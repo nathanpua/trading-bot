@@ -12,7 +12,7 @@ type Page = "dashboard" | "performance" | "ai-cycles" | "strategies" | "position
 
 const NAV: { id: Page; label: string; icon: string }[] = [
   { id: "dashboard", label: "Dashboard", icon: "▤" },
-  { id: "performance", label: "Performance", icon: "📊" },
+  { id: "performance", label: "Performance", icon: "♯" },
   { id: "ai-cycles", label: "AI Cycles", icon: "⚖" },
   { id: "strategies", label: "Strategies", icon: "Σ" },
   { id: "positions", label: "Positions", icon: "◈" },
