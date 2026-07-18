@@ -22,6 +22,7 @@ from .api import cycles as cycles_api
 from .api import analysis as analysis_api
 from .api import ai_cycles as ai_cycles_api
 from .api import strategies as strategies_api
+from .api import performance as performance_api
 from .api import universe as universe_api
 from .api import health as health_api
 from .services import journal_service
@@ -63,6 +64,7 @@ app.include_router(cycles_api.router)
 app.include_router(analysis_api.router)
 app.include_router(ai_cycles_api.router)
 app.include_router(strategies_api.router)
+app.include_router(performance_api.router)
 app.include_router(universe_api.router)
 
 # Serve frontend build if present (production)

@@ -5,12 +5,14 @@ import { Trades } from "./pages/Trades";
 import { Analysis } from "./pages/Analysis";
 import { AICycles } from "./pages/AICycles";
 import { Strategies } from "./pages/Strategies";
+import { Performance } from "./pages/Performance";
 import { api } from "./api/client";
 
-type Page = "dashboard" | "ai-cycles" | "strategies" | "positions" | "trades" | "analysis";
+type Page = "dashboard" | "performance" | "ai-cycles" | "strategies" | "positions" | "trades" | "analysis";
 
 const NAV: { id: Page; label: string; icon: string }[] = [
   { id: "dashboard", label: "Dashboard", icon: "▤" },
+  { id: "performance", label: "Performance", icon: "📊" },
   { id: "ai-cycles", label: "AI Cycles", icon: "⚖" },
   { id: "strategies", label: "Strategies", icon: "Σ" },
   { id: "positions", label: "Positions", icon: "◈" },
@@ -52,6 +54,7 @@ export default function App() {
       </aside>
       <main className="main">
         {page === "dashboard" && <Dashboard />}
+        {page === "performance" && <Performance />}
         {page === "ai-cycles" && <AICycles />}
         {page === "strategies" && <Strategies />}
         {page === "positions" && <Positions />}

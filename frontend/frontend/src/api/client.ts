@@ -22,6 +22,7 @@ export const api = {
   strategyScanSymbol: (sym: string) => fetchJSON(`/api/strategies/scan/${sym}`),
   universe: () => fetchJSON("/api/universe"),
   universeSymbols: () => fetchJSON("/api/universe/symbols"),
+  performance: () => fetchJSON("/api/performance"),
   stats: () => fetchJSON("/api/analysis/stats"),
   memorySearch: (q: string, limit = 5) =>
     fetchJSON(`/api/analysis/memory?q=${encodeURIComponent(q)}&limit=${limit}`),
