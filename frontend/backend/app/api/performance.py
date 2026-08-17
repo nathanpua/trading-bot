@@ -18,20 +18,68 @@ logger = logging.getLogger("dashboard")
 
 @router.get("")
 def get_performance():
-    """Full performance dashboard: returns + trades + metrics + equity curve."""
+    """Full performance dashboard: returns + trades + metrics + equity curve.
+
+    Equity curve and return metrics come from BROKER TRUTH (Alpaca portfolio
+    history + live account), not from cycle reports — so Sharpe/Sortino/
+    drawdown/total-return reflect the actual account. Total P&L = realized
+    (journal, FIFO from fills) + unrealized (live positions), which matches
+    the account equity gain. Falls back to journal-derived equity only if
+    the broker API is unreachable.
+    """
     try:
         stats = journal_service.get_stats()
         trades = journal_service.get_trades(limit=500)
-        equity_history = journal_service.get_equity_history()
 
-        # Calculate returns from equity curve
-        returns_data = _calculate_returns(equity_history)
+        # ── broker-truth equity curve ──
+        equity_curve = []
+        broker_ok = True
+        try:
+            hist = alpaca_service.get_portfolio_history(period="1M", timeframe="1D")
+            import datetime as _dt
+            for ts, eq in zip(hist.get("timestamp") or [], hist.get("equity") or []):
+                if eq:  # skip leading zeros before account funding
+                    equity_curve.append({
+                        "ts": _dt.datetime.fromtimestamp(
+                            ts, tz=_dt.timezone.utc).strftime("%Y-%m-%d"),
+                        "equity": float(eq),
+                    })
+            # append the live point (intraday equity as of this request)
+            acct = alpaca_service.get_account()
+            live_eq = float(acct.get("equity") or 0)
+            if live_eq:
+                today = _dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%d")
+                if equity_curve and equity_curve[-1]["ts"] == today:
+                    equity_curve[-1]["equity"] = live_eq
+                else:
+                    equity_curve.append({"ts": today, "equity": live_eq})
+        except Exception as e:
+            logger.warning("Broker equity history unavailable, falling back to journal: %s", e)
+            broker_ok = False
+            jh = journal_service.get_equity_history()
+            equity_curve = [{"ts": p["ts"][:10], "equity": float(p["equity"])}
+                            for p in jh if p.get("equity")]
+
+        # Calculate returns from equity curve (sorted, deduped by day)
+        returns_data = _calculate_returns(equity_curve)
 
         # Closed trades for win/loss analysis
         closed = [t for t in trades if t.get("status") == "closed" and t.get("pnl_dollars") is not None]
 
         # Trade-level metrics
-        trade_metrics = _trade_metrics(closed)
+        trade_metrics: dict = _trade_metrics(closed)
+
+        # Total P&L = realized + unrealized (account truth)
+        realized = round(sum(t["pnl_dollars"] for t in closed), 2) if closed else 0.0
+        unrealized = 0.0
+        try:
+            positions = alpaca_service.get_positions()
+            unrealized = round(sum(float(p.get("unrealized_pl") or 0) for p in positions), 2)
+        except Exception:
+            pass
+        trade_metrics["total_pnl"] = round(realized + unrealized, 2)
+        trade_metrics["realized_pnl"] = realized
+        trade_metrics["unrealized_pnl"] = unrealized
 
         # Portfolio-level metrics from equity curve
         portfolio_metrics = _portfolio_metrics(returns_data)
@@ -39,17 +87,12 @@ def get_performance():
         # Monthly breakdown
         monthly = _monthly_breakdown(closed)
 
-        # Cumulative P&L over time
+        # Cumulative P&L over time (realized only — knows nothing about open)
         cumulative = _cumulative_pnl(closed)
-
-        # Equity curve formatted for chart
-        equity_curve = [
-            {"ts": point["ts"][:10], "equity": point["equity"]}
-            for point in equity_history
-        ]
 
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data_source": "broker" if broker_ok else "journal",
             "trade_metrics": trade_metrics,
             "portfolio_metrics": portfolio_metrics,
             "overall": stats.get("overall"),
@@ -57,7 +100,7 @@ def get_performance():
             "by_symbol": stats.get("by_symbol", []),
             "monthly": monthly,
             "cumulative_pnl": cumulative,
-            "equity_curve": equity_curve,
+            "equity_curve": _dedupe_curve(equity_curve),
             "closed_trade_count": len(closed),
             "total_trade_count": len(trades),
         }
@@ -66,23 +109,46 @@ def get_performance():
         return {"error": str(e)[:200]}
 
 
+def _dedupe_curve(curve):
+    """Sort by day and keep the last equity per day (for charting)."""
+    by_day = {}
+    for p in curve:
+        day = str(p.get("ts", ""))[:10]
+        if day:
+            by_day[day] = float(p["equity"])
+    return [{"ts": d, "equity": by_day[d]} for d in sorted(by_day)]
+
+
 def _calculate_returns(equity_history):
-    """Compute period returns from equity curve points."""
+    """Compute period returns from equity curve points.
+
+    Normalizes the input first: sorts by timestamp and dedupes per calendar
+    day keeping the LAST point (intraday snapshots are superseded by later
+    ones). Leading zeros from unfunded-account history are dropped.
+    """
     if len(equity_history) < 2:
         return []
 
-    sorted_hist = sorted(equity_history, key=lambda x: x["ts"])
+    by_day = {}
+    for p in equity_history:
+        day = str(p.get("ts", ""))[:10]
+        if day and p.get("equity"):
+            by_day[day] = float(p["equity"])  # later points overwrite earlier
+    sorted_days = sorted(by_day.keys())
+    if len(sorted_days) < 2:
+        return []
+
     returns = []
-    for i in range(1, len(sorted_hist)):
-        prev_eq = sorted_hist[i - 1]["equity"]
-        curr_eq = sorted_hist[i]["equity"]
+    prev_eq = by_day[sorted_days[0]]
+    for day in sorted_days[1:]:
+        curr_eq = by_day[day]
         if prev_eq > 0:
-            ret = (curr_eq - prev_eq) / prev_eq
             returns.append({
-                "ts": sorted_hist[i]["ts"],
-                "return": ret,
+                "ts": day,
+                "return": (curr_eq - prev_eq) / prev_eq,
                 "equity": curr_eq,
             })
+        prev_eq = curr_eq
     return returns
 
 
@@ -195,10 +261,10 @@ def _portfolio_metrics(returns_data):
 
 
 def _monthly_breakdown(closed_trades):
-    """P&L grouped by month."""
+    """P&L grouped by month (by trade EXIT date — when P&L was realized)."""
     monthly = defaultdict(lambda: {"pnl": 0, "trades": 0, "wins": 0})
     for t in closed_trades:
-        ts = t.get("ts", "")
+        ts = t.get("exit_ts") or t.get("ts", "")
         if not ts:
             continue
         try:
@@ -225,15 +291,17 @@ def _monthly_breakdown(closed_trades):
 
 
 def _cumulative_pnl(closed_trades):
-    """Running cumulative P&L over time for charting."""
-    sorted_trades = sorted(closed_trades, key=lambda x: x.get("ts", ""))
+    """Running cumulative P&L over time for charting (by EXIT timestamp)."""
+    def _exit_ts(t):
+        return t.get("exit_ts") or t.get("ts", "")
+    sorted_trades = sorted(closed_trades, key=_exit_ts)
     cum = 0
     points = []
     for t in sorted_trades:
         pnl = t.get("pnl_dollars", 0)
         cum += pnl
         points.append({
-            "ts": t.get("ts", "")[:10],
+            "ts": _exit_ts(t)[:10],
             "cumulative_pnl": round(cum, 2),
             "symbol": t.get("symbol", ""),
             "pnl": round(pnl, 2),

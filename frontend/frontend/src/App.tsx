@@ -74,7 +74,7 @@ export default function App() {
             <span className={`status-dot ${marketOpen ? "open" : "closed"}`} />
             Market {marketOpen ? "OPEN" : "CLOSED"}
           </div>
-          <div className="footer-line">Alpaca Paper · GLM 4.7</div>
+          <div className="footer-line">Alpaca Paper · GLM 5.2</div>
         </div>
       </aside>
       <main className="main">
@@ -101,7 +101,7 @@ export default function App() {
           )}
           <div className="desk-bar-item">
             <span className="desk-bar-label">Model</span>
-            <span className="desk-bar-value">GLM 4.7</span>
+            <span className="desk-bar-value">GLM 5.2</span>
           </div>
         </div>
         <div className="main-content">

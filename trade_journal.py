@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS trades (
     regime TEXT,                  -- risk_on, neutral, risk_off, defensive
     tags TEXT,                    -- JSON array of custom tags
     status TEXT DEFAULT 'open',   -- open, closed
-    broker_order_id TEXT          -- Alpaca order id (dedupe key for reconciliation)
+    broker_order_id TEXT,         -- Alpaca order id (dedupe key for reconciliation)
+    exit_ts TEXT                  -- fill time of the closing sell (for closed rows)
 );
 
 CREATE TABLE IF NOT EXISTS lessons (
@@ -93,6 +94,8 @@ def init_db():
     cols = [r[1] for r in conn.execute("PRAGMA table_info(trades)")]
     if "broker_order_id" not in cols:
         conn.execute("ALTER TABLE trades ADD COLUMN broker_order_id TEXT")
+    if "exit_ts" not in cols:
+        conn.execute("ALTER TABLE trades ADD COLUMN exit_ts TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_boid ON trades(broker_order_id)")
     conn.commit()
     conn.close()
@@ -101,9 +104,11 @@ def init_db():
 def record_trade(symbol, side, qty=None, entry_price=None, exit_price=None,
                  stop_price=None, target_price=None, pnl_dollars=None, pnl_pct=None,
                  position_pct=None, risk_pct=None, thesis="", outcome="open",
-                 strategy="", regime="", tags=None, status="open", broker_order_id=None):
+                 strategy="", regime="", tags=None, status="open", broker_order_id=None,
+                 ts=None):
     """Record a trade action. broker_order_id is the Alpaca order id — used as
-    dedupe key by reconcile_journal() so backfills never double-count."""
+    dedupe key by reconcile_journal() so backfills never double-count.
+    ts overrides the row timestamp (e.g. the broker fill time on rebuild)."""
     init_db()
     conn = _get_db()
     if broker_order_id is not None:
@@ -114,7 +119,7 @@ def record_trade(symbol, side, qty=None, entry_price=None, exit_price=None,
             conn.close()
             logger.info("Skipping duplicate trade record for order %s (row %s)", broker_order_id, dup["id"])
             return
-    ts = datetime.now(timezone.utc).isoformat()
+    ts = ts or datetime.now(timezone.utc).isoformat()
     tags_json = json.dumps(tags or [])
     conn.execute("""
         INSERT INTO trades (ts, symbol, side, qty, entry_price, exit_price,
@@ -133,7 +138,7 @@ def record_trade(symbol, side, qty=None, entry_price=None, exit_price=None,
     logger.info("Recorded trade: %s %s %s", side, symbol, qty)
 
 
-def close_trade(symbol, exit_price, pnl_dollars, pnl_pct, outcome="closed", thesis="", qty=None):
+def close_trade(symbol, exit_price, pnl_dollars, pnl_pct, outcome="closed", thesis="", qty=None, exit_ts=None):
     """Close a position (or part of it) FIFO across open lots.
 
     With qty=None this closes the entire open position for the symbol, consuming
@@ -184,23 +189,23 @@ def close_trade(symbol, exit_price, pnl_dollars, pnl_pct, outcome="closed", thes
             conn.execute("""
                 UPDATE trades SET exit_price=?, pnl_dollars=?, pnl_pct=?, outcome=?,
                     thesis=CASE WHEN thesis IS NULL OR thesis='' THEN ? ELSE thesis || ' | ' || ? END,
-                    status='closed'
+                    status='closed', exit_ts=COALESCE(?, exit_ts)
                 WHERE id=?
             """, (lot_exit, round(lot_pnl, 2), round(lot_pnl_pct, 4) if lot_pnl_pct is not None else None,
-                  lot_outcome, thesis, thesis, lot["id"]))
+                  lot_outcome, thesis, thesis, exit_ts, lot["id"]))
         else:
             # partial: close the consumed part, keep remainder as new open row
             conn.execute("UPDATE trades SET qty=? WHERE id=?", (lot_qty - take, lot["id"]))
             conn.execute("""
                 INSERT INTO trades (ts, symbol, side, qty, entry_price, exit_price,
                     stop_price, target_price, pnl_dollars, pnl_pct, position_pct,
-                    risk_pct, thesis, outcome, strategy, regime, tags, status, broker_order_id)
+                    risk_pct, thesis, outcome, strategy, regime, tags, status, broker_order_id, exit_ts)
                 SELECT ts, symbol, side, ?, entry_price, ?, stop_price, target_price, ?, ?,
-                    position_pct, risk_pct, thesis, ?, strategy, regime, tags, 'closed', broker_order_id
+                    position_pct, risk_pct, thesis, ?, strategy, regime, tags, 'closed', broker_order_id, ?
                 FROM trades WHERE id=?
             """, (take, lot_exit, round(lot_pnl, 2),
                   round(lot_pnl_pct, 4) if lot_pnl_pct is not None else None,
-                  lot_outcome, lot["id"]))
+                  lot_outcome, exit_ts, lot["id"]))
             conn.execute("""
                 INSERT INTO trades_fts (rowid, symbol, thesis, strategy, tags)
                 SELECT last_insert_rowid(), symbol, thesis, strategy, tags
@@ -320,7 +325,8 @@ def reconcile_journal(thesis_map=None):
                          strategy=meta.get("strategy", "ai_multi_agent"),
                          regime=meta.get("regime", ""),
                          status="open",
-                         broker_order_id=oid)
+                         broker_order_id=oid,
+                         ts=o.get("submitted_at") or o.get("created_at"))
             n_buys_added += 1
         else:
             # SELL fill: FIFO-close this many shares at this price.
@@ -349,7 +355,8 @@ def reconcile_journal(thesis_map=None):
                         pnl_pct=None, outcome="closed",
                         thesis=(pendings.pop(oid, None) or {}).get(
                             "thesis", f"reconciled sell {qty} @ {price:.2f} (broker fill)"),
-                        qty=qty)
+                        qty=qty,
+                        exit_ts=o.get("submitted_at") or o.get("created_at"))
             conn = _get_db()
             conn.execute("DELETE FROM pending_orders WHERE order_id=?", (oid,))
             conn.commit()

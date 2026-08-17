@@ -50,6 +50,26 @@ def is_market_open() -> bool:
     return _cached("market_open", ac.is_market_open, ttl=30)
 
 
+def get_portfolio_history(period: str = "1M", timeframe: str = "1D") -> dict:
+    """Broker-side daily equity history (ground truth for the equity curve).
+
+    Returns raw Alpaca JSON: {timestamp: [...], equity: [...], base_value: ...}.
+    Longer TTL than quotes — the historical part only changes at EOD; the
+    performance endpoint appends the live account equity point separately.
+    """
+    def fetch():
+        import requests
+        import alpaca_client as ac
+        tc = ac.get_trading_client()
+        r = requests.get(
+            f"{tc._base_url.rstrip('/')}/v2/account/portfolio/history",
+            params={"period": period, "timeframe": timeframe},
+            headers=tc._get_auth_headers(), timeout=30)
+        r.raise_for_status()
+        return r.json()
+    return _cached(f"portfolio_history_{period}_{timeframe}", fetch, ttl=120)
+
+
 def get_bot_state() -> dict:
     import json
     from ..config import STATE_FILE

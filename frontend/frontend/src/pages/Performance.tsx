@@ -12,6 +12,7 @@ interface TradeMetrics {
   avg_win: number; avg_loss: number; profit_factor: number | null;
   expectancy: number; max_win_streak: number; max_loss_streak: number;
   total_pnl: number; largest_win: number; largest_loss: number;
+  realized_pnl?: number; unrealized_pnl?: number;
 }
 
 interface PortfolioMetrics {
@@ -58,10 +59,13 @@ export function Performance() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.performance().then((d: any) => {
-      setData(d as PerfData);
-      setLoading(false);
-    }).catch(() => setLoading(false));
+    let alive = true;
+    const load = () => api.performance().then((d: any) => {
+      if (alive) { setData(d as PerfData); setLoading(false); }
+    }).catch(() => { if (alive) setLoading(false); });
+    load();
+    const interval = setInterval(load, 30000); // live: broker equity + open P&L
+    return () => { alive = false; clearInterval(interval); };
   }, []);
 
   if (loading) return <div className="loading">Calculating performance metrics…</div>;
@@ -109,6 +113,9 @@ export function Performance() {
           <MetricTile label="Volatility" value={pm.volatility !== null ? `${pm.volatility}%` : "—"}
             sub="annualized" />
           <MetricTile label="Total P&L" value={fmt.signedCurrency(tm.total_pnl)}
+            sub={tm.realized_pnl !== undefined && tm.unrealized_pnl !== undefined
+              ? `${fmt.signedCurrency(tm.realized_pnl)} realized + ${fmt.signedCurrency(tm.unrealized_pnl)} open`
+              : undefined}
             color={pnlColor(tm.total_pnl)} />
         </div>
       </div>
