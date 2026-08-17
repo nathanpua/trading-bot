@@ -15,7 +15,7 @@ Input (stdin or --file): JSON array of actions:
 Safety: every BUY passes through risk_manager sizing + concentration cap.
 Market-hours gated (BUYs only; CLOSEs execute anytime Alpaca allows).
 """
-import os, sys, json, argparse
+import os, sys, json, argparse, math, logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -24,7 +24,10 @@ import alpaca_client as ac
 import indicators as ind
 import risk_manager as rm
 import finnhub_client as fc
+import lse_client as lse
 import yaml
+
+logger = logging.getLogger(__name__)
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -97,21 +100,32 @@ def execute_plan(plan, cfg, dry_run=True):
                                 "reason": "not held"})
                 continue
             pos = positions[sym]
-            qty = action.get("qty", "all")
-            if qty == "all" or qty == "ALL":
-                sell_qty = float(pos["qty"])
+            full_qty = float(pos["qty"])
+
+            # Resolve sell quantity: qty_pct takes priority, then qty, then "all".
+            # qty_pct is a fraction of the held position (e.g. 0.25 = sell 25%).
+            qty_pct = action.get("qty_pct")
+            if qty_pct is not None:
+                sell_qty = math.floor(full_qty * float(qty_pct))
+                if sell_qty < 1:
+                    sell_qty = 1  # minimum 1 share for fractional pct on small positions
             else:
-                sell_qty = min(float(qty), float(pos["qty"]))
+                qty = action.get("qty", "all")
+                if qty == "all" or qty == "ALL":
+                    sell_qty = full_qty
+                else:
+                    sell_qty = min(float(qty), full_qty)
+
             exit_price = float(pos["current_price"])
             entry_price = float(pos["avg_entry_price"])
             # Pro-rate P&L for partial sells
-            full_qty = float(pos["qty"])
             pnl_dollars = float(pos.get("unrealized_pl", 0)) * (sell_qty / full_qty) if full_qty else 0
-            cost_basis = entry_price * sell_qty
             pnl_pct = ((exit_price - entry_price) / entry_price * 100) if entry_price else 0
+            trim_pct_of_pos = round(sell_qty / full_qty * 100, 1) if full_qty else 0
             if dry_run:
                 results.append({"action": act, "symbol": sym, "status": "dry_run",
-                                "qty": sell_qty, "thesis": thesis,
+                                "qty": sell_qty, "qty_pct_of_pos": trim_pct_of_pos,
+                                "thesis": thesis,
                                 "entry_price": entry_price,
                                 "exit_price": exit_price,
                                 "pnl_dollars": pnl_dollars,
@@ -123,12 +137,20 @@ def execute_plan(plan, cfg, dry_run=True):
                         ac.cancel_order(o["id"])
                     r = ac.place_market_order(sym, side="sell", qty=sell_qty)
                     results.append({"action": act, "symbol": sym, "status": "executed",
-                                    "qty": sell_qty, "thesis": thesis,
+                                    "qty": sell_qty, "qty_pct_of_pos": trim_pct_of_pos,
+                                    "thesis": thesis,
                                     "entry_price": entry_price,
                                     "exit_price": exit_price,
                                     "pnl_dollars": pnl_dollars,
                                     "pnl_pct": pnl_pct,
                                     "result": r})
+                    # Register for FIFO close by reconcile at the REAL fill price
+                    try:
+                        import trade_journal as tj
+                        tj.record_pending(r.get("id"), "sell", {
+                            "thesis": f"{act} ({trim_pct_of_pos:.0f}% of position): {thesis[:400]}"})
+                    except Exception as e:
+                        logger.warning("record_pending(sell %s) failed: %s", sym, e)
                 except Exception as e:
                     results.append({"action": act, "symbol": sym, "status": "error",
                                     "error": str(e)[:100]})
@@ -142,7 +164,7 @@ def execute_plan(plan, cfg, dry_run=True):
 
             # Get current data for sizing
             try:
-                quote = fc.get_quote(sym)
+                quote = lse.get_quote(sym)
                 entry = float(quote.get("c") or 0)
                 if entry <= 0:
                     df = ind.add_all_indicators(ac.get_bars(sym, "1Day", 100))
@@ -165,7 +187,8 @@ def execute_plan(plan, cfg, dry_run=True):
             sizing = rm.calculate_position_size(
                 pv, entry, stop,
                 max_risk_pct=risk_pct,
-                max_position_pct=rcfg["max_concentration"])
+                max_position_pct=rcfg["max_concentration"],
+                size_pct=action.get("size_pct"))
             shares = sizing["shares"]
 
             if shares <= 0:
@@ -175,7 +198,8 @@ def execute_plan(plan, cfg, dry_run=True):
 
             # Check portfolio limits
             held_count = len(positions) + len([r for r in results if r.get("status") in ("executed", "dry_run") and r.get("action") == "BUY"])
-            if sym not in positions and held_count >= rcfg["max_positions"]:
+            if (sym not in positions and rcfg.get("max_positions") is not None
+                    and held_count >= rcfg["max_positions"]):
                 results.append({"action": "BUY", "symbol": sym, "status": "skipped",
                                 "reason": f"max positions ({rcfg['max_positions']}) reached"})
                 continue
@@ -214,6 +238,21 @@ def execute_plan(plan, cfg, dry_run=True):
                     order["order_id"] = str(res.id)
                     results.append(order)
                     cash -= shares * entry
+                    # Register for journal reconciliation with AI context;
+                    # reconcile_journal() records it at the REAL fill price.
+                    try:
+                        import trade_journal as tj
+                        tj.record_pending(str(res.id), "buy", {
+                            "thesis": thesis,
+                            "strategy": "ai_multi_agent",
+                            "regime": action.get("_regime", ""),
+                            "stop_price": round(stop, 2),
+                            "target_price": round(target, 2),
+                            "position_pct": round(sizing["position_pct"], 1),
+                            "risk_pct": round(sizing["risk_pct"], 3),
+                        })
+                    except Exception as e:
+                        logger.warning("record_pending(buy %s) failed: %s", sym, e)
                 except Exception as e:
                     order["status"] = "error"
                     order["error"] = str(e)[:100]

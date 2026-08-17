@@ -10,8 +10,12 @@ account:
 
 risk:
   max_risk_per_trade: 0.02       # 2% of portfolio at risk per trade
-  max_concentration: 0.25        # 25% max in a single position
-  max_positions: 5               # max concurrent positions
+  max_concentration: 0.25        # 25% max in a single position at ENTRY
+  concentration_trim_threshold: 0.32  # trim existing positions only above 32%
+                                  # (lets winners run without churning on minor drift)
+  max_positions: null            # null = UNLIMITED concurrent positions
+                                  # (capital is bounded by max_concentration 25% at entry
+                                  #  and max_total_exposure 90% — count is not a constraint)
   max_total_exposure: 0.90       # never more than 90% invested
   max_daily_loss: 0.02           # -2% in one day → HALT new entries
   max_drawdown: 0.08             # -8% from equity high-water → DEFENSIVE
@@ -22,11 +26,15 @@ strategy:
   entry_threshold: 2             # min confluence score (of 5) to qualify
   require_uptrend: true          # only enter if price > SMA50 (trend filter)
   require_macd_positive: true    # only enter if MACD histogram > 0
-  universe:                      # symbols the scanner evaluates
-    semis:     [NVDA, AMD, MRVL, AVGO, INTC, MU, WDC, STX, AMAT, KLAC, LRCX, NXPI]
-    mega:      [AAPL, MSFT, GOOGL, AMZN, META, TSLA]
-    high_beta: [COIN, PLTR, MSTR, NFLX]
-    etf:       [SPY, QQQ, IWM, XLK, XLF, SMH, SOXX, XLE]
+  universe:                      # symbols the scanner evaluates (LSE-covered ETFs)
+    broad:      [SPY, QQQ, IWM, VOO, DIA, VTI]           # broad market indices
+    sectors:    [XLE, XLF]                                 # sector SPDRs
+    semis:      [SMH, SOXX, SOXL, SOXS]                   # semiconductors incl leveraged
+    commodities: [GLD, SLV, GDX]                           # gold, silver, miners
+    crypto:     [IBIT, BITO, ETHA]                         # crypto ETFs
+    bonds:      [TLT, HYG]                                 # treasury + high yield
+    leveraged:  [TQQQ, SQQQ, TSLL, ARKK]                  # leveraged / thematic growth
+    emerging:   [EEM]                                      # emerging markets
 
 position_management:
   trailing_stop_activate_r: 1.0  # start trailing after +1R profit

@@ -23,6 +23,7 @@ import alpaca_client as ac
 import indicators as ind
 import risk_manager as rm
 import finnhub_client as fc
+import lse_client as lse
 
 logger = logging.getLogger(__name__)
 
@@ -91,26 +92,28 @@ def _halt_expired(state):
 # ───────────────────────── regime ─────────────────────────
 
 def assess_regime(cfg):
-    """Read VIX (+ VIXY fallback) + SPY trend → regime + risk multiplier (0.0–1.0)."""
+    """Read volatility + SPY trend → regime + risk multiplier (0.0–1.0).
+
+    VIX data comes from LSE's volatility index (VIX/USD).
+    Falls back to ETF-based regime assessment if VIX unavailable.
+    """
     rcfg = cfg["regime"]
     reasons = []
 
-    # VIX fear gauge — spot VIX not on Finnhub free tier (returns 0); fall
-    # back to VIXY (short-term VIX futures ETF) as a fear proxy.
+    # VIX fear gauge — try LSE volatility index first
     vix = None; vix_src = None
-    for sym in ("VIX", "VIXY", "UVXY"):
+    for sym in ("VIX/USD",):
         try:
-            q = fc.get_quote(sym)
+            q = lse.get_quote(sym)
             c = float(q.get("c") or 0)
             if c > 0:
                 vix = c; vix_src = sym
-                if sym == "UVXY":
-                    vix = c / 2  # UVXY is 2x — rough de-lever to compare to spot-ish
                 break
         except Exception:
             continue
     if vix is None:
-        reasons.append("VIX/VIXY quote unavailable")
+        # Fallback: use SPY ATR as a volatility proxy
+        reasons.append("VIX quote unavailable — using SPY trend proxy for regime")
 
     # SPY broad trend
     try:
@@ -445,7 +448,8 @@ def plan_and_execute_entries(cfg, regime, candidates, execute):
 
     results = []
     for c in candidates:
-        if len(positions) + len([r for r in results if r.get("status") == "submitted"]) >= rcfg["max_positions"]:
+        if (rcfg.get("max_positions") is not None
+                and len(positions) + len([r for r in results if r.get("status") == "submitted"]) >= rcfg["max_positions"]):
             results.append({"symbol": c["symbol"], "skip": "max positions reached"})
             continue
         if (exposure / pv) >= rcfg["max_total_exposure"]:

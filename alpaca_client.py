@@ -189,74 +189,49 @@ def get_bars(symbols, timeframe="1Day", limit=100, start=None, end=None):
     """
     Get historical OHLCV bars.
 
-    Strategy (free-tier friendly):
-    1. Check local cache at ~/trading-bot/data/<symbol>.csv
-    2. If cache exists and is recent (< 1 day old), use it
-    3. If cache is stale or missing, fetch from Alpha Vantage (free, 25 req/day)
-       and merge with Alpaca latest bar (real-time)
-    4. Alpaca snapshots provide today's bar for real-time freshness
+    Primary source: LSE (London Strategic Edge) — free, deep history, fast.
+    Fallback: Alpaca bars, then Alpha Vantage (legacy).
 
     Args:
         symbols: str or list of ticker symbols
         timeframe: '1Min', '5Min', '15Min', '1Hour', '1Day' (default '1Day')
         limit: number of bars (default 100)
-        start/end: ISO datetime (optional, unused for cached mode)
+        start/end: ISO datetime (optional)
     Returns pandas DataFrame: timestamp, open, high, low, close, volume, symbol.
     """
     import pandas as pd
     from datetime import datetime, timedelta
-    import time
 
     if isinstance(symbols, str):
         symbols = [symbols]
 
-    cache_dir = os.path.join(os.path.dirname(__file__), "data")
-    os.makedirs(cache_dir, exist_ok=True)
-
     all_dfs = []
     for sym in symbols:
-        cache_path = os.path.join(cache_dir, f"{sym}.csv")
+        # Primary: LSE
+        try:
+            import lse_client
+            df = lse_client.get_bars(sym, timeframe=timeframe, limit=limit)
+            if df is not None and not df.empty:
+                if len(df) >= 2:  # LSE data is valid
+                    df["symbol"] = sym
+                    all_dfs.append(df.tail(limit))
+                    continue
+        except Exception:
+            pass  # Fall through to Alpaca
 
-        # Try loading from cache
-        df = None
-        if os.path.exists(cache_path):
-            mtime = datetime.fromtimestamp(os.path.getmtime(cache_path))
-            age_hours = (datetime.now() - mtime).total_seconds() / 3600
-            if age_hours < 20:  # Cache is fresh enough
-                df = pd.read_csv(cache_path, parse_dates=["timestamp"])
-
-        # Cache miss, stale, OR too short for the requested window → fetch fresh.
-        # Alpaca daily bars are the PRIMARY source (richest history; ~890 bars on
-        # the free/paper tier). Fall back to Alpha Vantage (compact ~100 bars)
-        # then Alpaca snapshot (today + previous) if Alpaca is unavailable.
-        if df is None or len(df) < limit:
-            alp_df = _fetch_alpaca_bars(sym, timeframe=timeframe, start=start, end=end)
-            if alp_df is not None and not alp_df.empty:
-                df = alp_df
-                df.to_csv(cache_path, index=False)
-            elif df is None:
-                av_df = _fetch_alphavantage(sym)
-                if av_df is not None and not av_df.empty:
-                    df = av_df
-                    df.to_csv(cache_path, index=False)
-                    time.sleep(12)  # Respect Alpha Vantage rate limit (5/min on free)
-                else:
-                    # Last resort: try Alpaca snapshot (today + previous only)
-                    df = _fetch_alpaca_snapshot_bars(sym)
-
-        # Try to refresh today's bar via Alpaca snapshot (real-time update)
-        if df is not None and not df.empty:
-            today_bar = _fetch_alpaca_snapshot_bars(sym)
-            if today_bar is not None and not today_bar.empty:
-                latest_cached = df.iloc[-1]["timestamp"] if "timestamp" in df.columns else None
-                latest_bar_date = str(today_bar.iloc[-1]["timestamp"])[:10]
-                if latest_cached and not str(latest_cached)[:10] == latest_bar_date:
-                    df = pd.concat([df, today_bar], ignore_index=True)
-                    df.to_csv(cache_path, index=False)
-
-        if df is not None and not df.empty:
+        # Fallback: Alpaca bars (legacy path)
+        alp_df = _fetch_alpaca_bars(sym, timeframe=timeframe, start=start, end=end)
+        if alp_df is not None and not alp_df.empty:
+            df = alp_df
             df["symbol"] = sym
             all_dfs.append(df.tail(limit))
+            continue
+
+        # Last resort: Alpha Vantage
+        av_df = _fetch_alphavantage(sym)
+        if av_df is not None and not av_df.empty:
+            av_df["symbol"] = sym
+            all_dfs.append(av_df.tail(limit))
 
     if not all_dfs:
         return pd.DataFrame()

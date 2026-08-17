@@ -38,6 +38,7 @@ import alpaca_client as ac
 import indicators as ind
 import risk_manager as rm
 import finnhub_client as fc
+import lse_client as lse
 
 # ───────────────────────── GLM API Client ─────────────────────────
 
@@ -71,11 +72,20 @@ def _load_glm_config():
     return key, base_url
 
 
-def glm_chat(messages, model="glm-4.7", temperature=0.3, max_tokens=4096, timeout=180):
+def glm_chat(messages, model="glm-5.2", temperature=0.3, max_tokens: int | None = 4096, timeout=180):
     """Call the GLM (Z.AI) chat completions API.
 
     Returns the assistant message content string.
     Falls back gracefully on errors.
+
+    GLM 5.2 is a reasoning model: it produces reasoning_content first, then
+    content. We need max_tokens >= 2000 or content will be empty (all tokens
+    consumed by reasoning). The thinking parameter is NOT set — we let the
+    model use its default reasoning depth.
+
+    If max_tokens is None, the parameter is omitted from the API payload
+    entirely, letting the API apply its own default maximum. This is useful
+    for analyst agents that should have no artificial output cap.
     """
     key, base_url = _load_glm_config()
     if not key:
@@ -90,13 +100,21 @@ def glm_chat(messages, model="glm-4.7", temperature=0.3, max_tokens=4096, timeou
         "model": model,
         "messages": messages,
         "temperature": temperature,
-        "max_tokens": max_tokens,
     }
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
 
     resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
     resp.raise_for_status()
     data = resp.json()
-    return data["choices"][0]["message"]["content"]
+    content = data["choices"][0]["message"]["content"]
+    # GLM 5.2 may return empty content if max_tokens is too low (all consumed
+    # by reasoning_content). Log a warning but return what we got.
+    if not content:
+        reasoning = data["choices"][0]["message"].get("reasoning_content", "")
+        logger.warning("GLM %s returned empty content (reasoning used %d chars). "
+                       "Consider increasing max_tokens.", model, len(reasoning))
+    return content
 
 
 # ───────────────────────── Context Builder ─────────────────────────
@@ -233,16 +251,16 @@ def _check_earnings(symbol, cfg, days=5):
 
 
 def _assess_regime(cfg):
-    """Quick regime assessment: VIX proxy + SPY trend."""
+    """Quick regime assessment: VIX + SPY trend."""
     reasons = []
     vix = None
-    for sym in ("VIX", "VIXY", "UVXY"):
+    for sym in ("VIX/USD",):
         try:
-            q = fc.get_quote(sym)
+            q = lse.get_quote(sym)
             c = float(q.get("c") or 0)
             if c > 0:
-                vix = c / 2 if sym == "UVXY" else c
-                reasons.append(f"{sym}={c:.0f}")
+                vix = c
+                reasons.append(f"VIX={c:.1f}")
                 break
         except Exception:
             continue
@@ -458,7 +476,7 @@ You analyze market data, technical indicators, news, and historical trade memory
 2. **Manage existing positions before opening new ones**: Review each position's technicals vs entry thesis. Exit when thesis is invalidated.
 3. **Earnings catalyst awareness**: If earnings are within 5 days, prefer HOLDING through the catalyst (user preference) unless the position is at a loss AND technicals have deteriorated.
 4. **Confluence over single signals**: A buy signal is stronger when multiple indicators agree (RSI oversold + MACD positive + above SMA50).
-5. **Respect risk limits**: Max 5 positions, max 25% concentration, max 2% risk per trade. The risk manager will enforce these, but factor them into your plan.
+5. **Respect risk limits**: There is NO position-count limit — hold as many positions as conviction and capital justify. Capital is bounded instead by: max 25% concentration per NEW entry, max 2% risk per trade, max 90% total exposure. The risk manager will enforce these, but factor them into your plan.
 6. **Cut losses, ride winners**: If a position is losing and the thesis is broken, exit. If winning and momentum continues, hold or let the trailing stop work.
 
 ## User Preferences (IMPORTANT)
@@ -500,7 +518,7 @@ Rules for actions:
 class AITradingAgent:
     """AI-powered trading decision agent using GLM 5.2."""
 
-    def __init__(self, model="glm-4.7", temperature=0.3):
+    def __init__(self, model="glm-5.2", temperature=0.3):
         self.model = model
         self.temperature = temperature
         self.cfg = self._load_config()
@@ -661,9 +679,11 @@ class AITradingAgent:
         # Config constraints
         risk = self.cfg.get("risk", {})
         lines.append(f"\n--- RISK CONSTRAINTS ---")
+        max_pos = risk.get('max_positions')
+        pos_str = str(max_pos) if max_pos is not None else "unlimited"
         lines.append(f"  Max risk/trade: {risk.get('max_risk_per_trade', 0.02)*100:.0f}% | "
                       f"Max concentration: {risk.get('max_concentration', 0.25)*100:.0f}% | "
-                      f"Max positions: {risk.get('max_positions', 5)}")
+                      f"Max positions: {pos_str}")
 
         lines.append("\n=== END CONTEXT — Make your decisions, Desk Chief ===")
 
@@ -757,7 +777,7 @@ class AITradingAgent:
                 a["risk_pct"] = min(float(risk_pct), rcfg["max_risk_per_trade"])
                 valid.append(a)
 
-            elif act in ("SELL", "CLOSE"):
+            elif act in ("SELL", "TRIM", "CLOSE"):
                 if sym and sym not in positions:
                     rejections.append(f"{act} {sym}: not currently held")
                     continue
@@ -960,8 +980,8 @@ if __name__ == "__main__":
                     help="LIVE submit orders (default: dry run)")
     ap.add_argument("--decide-only", action="store_true",
                     help="Just show the AI decision without executing")
-    ap.add_argument("--model", default="glm-4.7",
-                    help="Model to use (default: glm-4.7)")
+    ap.add_argument("--model", default="glm-5.2",
+                    help="Model to use (default: glm-5.2)")
     ap.add_argument("--temperature", type=float, default=0.3,
                     help="LLM temperature (default: 0.3)")
     args = ap.parse_args()

@@ -164,8 +164,8 @@ Each invocation of `autonomous_engine.py` runs one complete cycle:
                 • Time stop (exit if flat/negative after N days)
 
 5. GOVERN       Each candidate → ATR stop + 2:1 target, size by
-                risk % × regime multiplier, capped by concentration %,
-                max positions, and max total exposure.
+                risk % × regime multiplier, capped by concentration %
+                and max total exposure (no position-count limit).
 
 6. EXECUTE      Submit bracket orders (market + stop-loss + take-profit).
                 DRY RUN by default; --execute submits to your paper account.
@@ -185,7 +185,7 @@ Everything tunable lives in [`config.yaml`](config.yaml). Key sections:
 risk:
   max_risk_per_trade: 0.02     # risk 2% of portfolio per trade
   max_concentration: 0.25      # max 25% in one position
-  max_positions: 5             # max concurrent positions
+  max_positions: null         # null = unlimited concurrent positions
   max_daily_loss: 0.02         # -2% in a day → HALT
   max_drawdown: 0.08           # -8% from peak → DEFENSIVE
   atr_stop_mult: 1.5           # stop = entry − 1.5×ATR
@@ -285,7 +285,7 @@ regardless of what the plan says — the desk chief *decides*, the executor *gov
 | Drawdown kill switch | -8% → 2-day defensive halt |
 | Risk-based sizing | Never more than `max_risk_per_trade` at risk |
 | Concentration cap | No single position over `max_concentration` |
-| Portfolio caps | `max_positions` + `max_total_exposure` enforced pre-submit |
+| Portfolio caps | `max_total_exposure` enforced pre-submit (`max_positions` optional, null = unlimited) |
 
 ---
 

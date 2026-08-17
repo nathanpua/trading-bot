@@ -1,28 +1,16 @@
-"""Catalyst scan: earnings dates, company news, economic calendar via Finnhub.
+"""Catalyst scan: company news + economic calendar.
+  - News: Finnhub (market + company news)
+  - Economic calendar: LSE (replaces Finnhub economic calendar)
+  - Earnings: N/A (ETF universe has no earnings)
+
 Run: python scripts/catalyst_scan.py
 """
-import os, time, requests, pathlib
+import os, sys, time, pathlib
 
-_BASE = "https://finnhub.io/api/v1"
-_env = pathlib.Path("/home/ubuntu/trading-bot/.env")
-_key = None
-def key():
-    global _key
-    if _key: return _key
-    for line in _env.read_text().splitlines():
-        if line.startswith("FINNHUB_API_KEY=") and not line.startswith("#"):
-            _key = line.split("=",1)[1].strip().strip("'\"")
-            os.environ["FINNHUB_API_KEY"] = _key
-            return _key
-    raise RuntimeError("no key")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-_s = requests.Session()
-def g(path, params):
-    params = dict(params); params["token"] = key()
-    r = _s.get(_BASE + path, params=params, timeout=20)
-    r.raise_for_status()
-    time.sleep(0.5)
-    return r.json()
+import finnhub_client as fc
+import lse_client as lse
 
 def pd_ts(t):
     if t is None: return "?"
@@ -32,48 +20,34 @@ def pd_ts(t):
 def section(title):
     print("="*60); print(title); print("="*60)
 
-# 1) MU earnings
-section("1) MICRON (MU) EARNINGS CALENDAR  Jun 22 - Jul 31, 2026")
-try:
-    cal = g("/calendar/earnings", {"from":"2026-06-22","to":"2026-07-31"})
-    items = cal.get("earningsCalendar", [])
-    mu = [x for x in items if (x.get("symbol") or "").upper()=="MU"]
-    if mu:
-        for x in mu:
-            print(f"  MU earnings: {x.get('date')}  estEPS {x.get('epsEstimate')}  rev {x.get('revenueEstimate')}  hour {x.get('hour')}")
-    else:
-        print(f"  MU not in window Jun22-Jul31. Total entries: {len(items)}. Sample:")
-        for x in items[:8]: print(f"    {x.get('symbol')}: {x.get('date')}")
-except Exception as e:
-    print(f"  ERROR: {e}")
-
-# 2/3) NVDA & AVGO news
-for sym in ("NVDA","AVGO"):
-    section(f"2/3) COMPANY NEWS  {sym}  last 72h (Jun 19-22, 2026)")
+# 1) Company news for top ETFs
+for sym in ("SPY", "QQQ", "GLD"):
+    section(f"1) COMPANY NEWS  {sym}  last 7 days")
     try:
-        news = g("/company-news", {"symbol":sym,"from":"2026-06-19","to":"2026-06-22"})
+        news = fc.get_company_news(sym, days=7, count=8)
         print(f"  count={len(news)}")
         for n in news[:8]:
             print(f"  [{pd_ts(n.get('datetime'))}] {n.get('headline','')[:115]}  ({n.get('source','')})")
     except Exception as e:
         print(f"  ERROR: {e}")
 
-# 4) Economic calendar
-section("4) US ECONOMIC CALENDAR  Jun 22-27, 2026")
+# 2) Economic calendar via LSE
+section("2) US ECONOMIC CALENDAR  (next 7 days)")
 try:
-    econ = g("/calendar/economic", {"from":"2026-06-22","to":"2026-06-27"})
-    items = econ.get("economicCalendar", econ if isinstance(econ,list) else [])
-    us = [x for x in items if (x.get("country") or "").upper()=="US"]
-    print(f"  total={len(items)}  US={len(us)}")
-    for x in us:
-        print(f"  [{x.get('time','?')}] impact={x.get('impact','?')}  {x.get('event','?')[:65]}  actual={x.get('actual')} est={x.get('estimate')}")
+    from datetime import datetime, timedelta
+    start = datetime.utcnow().strftime("%Y-%m-%d")
+    end = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%d")
+    events = lse.get_economic_calendar(region="US", start=start, end=end)
+    print(f"  total events: {len(events)}")
+    for e in events[:15]:
+        print(f"  [{e.get('date','?')}] impact={e.get('importance','?')}  {e.get('event','?')[:65]}  actual={e.get('actual')} est={e.get('forecast')}")
 except Exception as e:
     print(f"  ERROR: {e}")
 
-# 5) General market news
-section("5) MARKET / GENERAL NEWS  last 72h (top headlines)")
+# 3) General market news
+section("3) MARKET / GENERAL NEWS  (top headlines)")
 try:
-    mnews = g("/news", {"category":"general"})
+    mnews = fc.get_market_news(category="general", count=14)
     print(f"  count={len(mnews)}")
     for n in mnews[:14]:
         print(f"  [{pd_ts(n.get('datetime'))}] {n.get('headline','')[:115]}  ({n.get('source','')})")

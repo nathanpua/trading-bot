@@ -146,7 +146,7 @@ def format_discord(data):
         lines.append(f"├─ STRATEGY [{confidence}]")
         lines.append(f"│  {summary_short}")
 
-    lines.append(f"└─ GLM 4.7 │ {len(briefings)} analysts")
+    lines.append(f"└─ GLM 5.2 │ {len(briefings)} analysts")
     lines.append("```")
 
     return "\n".join(lines)

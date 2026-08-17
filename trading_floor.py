@@ -5,7 +5,7 @@ Multi-Agent Trading Floor — collaborative AI decision system.
 ARCHITECTURE
 ============
 Five specialized analyst agents run in PARALLEL, each examining a different
-facet of the market. A Desk Chief (also GLM 4.7) reads all briefings
+facet of the market. A Desk Chief (also GLM 5.2) reads all briefings
 and produces the final trade plan.
 
     ┌─────────────────────────────────────────────────────────┐
@@ -64,6 +64,7 @@ from ai_agent import glm_chat, build_market_context, _safe_call
 import alpaca_client as ac
 import risk_manager as rm
 import finnhub_client as fc
+import lse_client as lse
 
 # ═══════════════════════════════════════════════════════════════
 #  ANALYST AGENT BASE
@@ -74,11 +75,11 @@ class AnalystAgent:
 
     Each agent:
     1. Receives the shared market context
-    2. Asks GLM 4.7 to analyze its specific domain
+    2. Asks GLM 5.2 to analyze its specific domain
     3. Returns a structured briefing (dict with assessment + signals)
     """
 
-    def __init__(self, name, role, system_prompt, model="glm-4.7", temperature=0.2):
+    def __init__(self, name, role, system_prompt, model="glm-5.2", temperature=0.2):
         self.name = name
         self.role = role
         self.system_prompt = system_prompt
@@ -94,7 +95,7 @@ class AnalystAgent:
         ]
         try:
             raw = glm_chat(messages, model=self.model, temperature=self.temperature,
-                          max_tokens=1500, timeout=120)
+                          max_tokens=None, timeout=180)
             return self._parse(raw, context)
         except Exception as e:
             logger.warning("Agent %s failed: %s", self.name, e)
@@ -228,7 +229,8 @@ RISK_SYSTEM = """You are a Risk Manager on a trading desk. Your job: assess risk
 You are managing a PAPER TRADING account. The purpose is to LEARN and make profitable trades, not to hoard cash. An under-deployed portfolio that never trades is also a failure mode.
 
 Focus on:
-- Position concentration (any single position > 25% of portfolio is a hard limit)
+- Position concentration: NEW entries are capped at 25% of portfolio. But EXISTING positions that drift above 25% due to price appreciation are WINNERS, not breaches. Do NOT recommend trimming a position just because it went from 25% to 26%. Only flag concentration as a risk if a single position exceeds 32% of portfolio (the trim threshold).
+- The distinction: buying 30% of portfolio in one name = risky (breaches entry cap). A 25% position growing to 27% because the stock went up = good. Trimming winners creates churn and destroys returns.
 - Cash buffer (below 10% is genuinely dangerous; below 20% is fine for a paper account)
 - Correlation risk (multiple positions in the same sector)
 - Daily loss tracking and drawdown from high-water
@@ -237,6 +239,7 @@ Focus on:
 Assess risk factually. Do NOT default to "defensive" when the portfolio is healthy.
 If cash is > 50% and there are fewer than 3 positions, the real risk is OPPORTUNITY COST — recommend deploying capital, not hoarding it.
 Only recommend "defensive" or "halt" when there's an actual breach or near-breach of hard limits.
+Do NOT recommend REDUCE/EXIT for positions between 25-32% unless there is a separate thesis-based reason (trend break, signal flip, etc.). When you DO recommend reducing, use TRIM_25 (sell 25%) or TRIM_50 (sell 50%) instead of full EXIT — preserve core positions when the thesis is intact.
 
 Output STRICT JSON only:
 {
@@ -248,7 +251,7 @@ Output STRICT JSON only:
       "symbol": "MU",
       "risk": "concentration | correlation | earnings_gap | drawdown",
       "severity": "high | medium | low",
-      "recommendation": "HOLD | REDUCE | EXIT",
+      "recommendation": "HOLD | TRIM_25 | TRIM_50 | EXIT",
       "note": "1 sentence"
     }
   ],
@@ -293,7 +296,7 @@ Output STRICT JSON only:
 
 
 class MacroAnalyst(AnalystAgent):
-    def __init__(self, model="glm-4.7"):
+    def __init__(self, model="glm-5.2"):
         super().__init__("macro_analyst", "Macro Analyst", MACRO_SYSTEM, model)
 
     def _build_prompt(self, context):
@@ -322,9 +325,9 @@ class MacroAnalyst(AnalystAgent):
 
     def _get_proxy_quotes(self):
         proxies = {}
-        for sym in ("SPY", "QQQ", "TLT", "GLD", "XLE", "XLF", "XLK", "VIXY"):
+        for sym in ("SPY", "QQQ", "TLT", "GLD", "XLE", "XLF", "SMH", "IWM", "EEM", "ARKK"):
             try:
-                q = fc.get_quote(sym)
+                q = lse.get_quote(sym)
                 c = float(q.get("c") or 0)
                 if c > 0:
                     proxies[sym] = {"price": c, "change_pct": round(float(q.get("dp") or 0), 2)}
@@ -334,7 +337,7 @@ class MacroAnalyst(AnalystAgent):
 
 
 class NewsAnalyst(AnalystAgent):
-    def __init__(self, model="glm-4.7"):
+    def __init__(self, model="glm-5.2"):
         super().__init__("news_analyst", "News Analyst", NEWS_SYSTEM, model)
 
     def _build_prompt(self, context):
@@ -371,7 +374,7 @@ class NewsAnalyst(AnalystAgent):
 
 
 class TechnicalAnalyst(AnalystAgent):
-    def __init__(self, model="glm-4.7"):
+    def __init__(self, model="glm-5.2"):
         super().__init__("technical_analyst", "Technical Analyst", TECHNICAL_SYSTEM, model)
 
     def _build_prompt(self, context):
@@ -405,7 +408,7 @@ class TechnicalAnalyst(AnalystAgent):
 
 
 class RiskAnalyst(AnalystAgent):
-    def __init__(self, model="glm-4.7"):
+    def __init__(self, model="glm-5.2"):
         super().__init__("risk_analyst", "Risk Manager", RISK_SYSTEM, model)
 
     def _build_prompt(self, context):
@@ -417,19 +420,28 @@ class RiskAnalyst(AnalystAgent):
         lines.append(f"Equity: ${a.get('equity', 0):,.0f}")
         lines.append(f"Cash: ${a.get('cash', 0):,.0f} ({exp.get('cash_pct', 0):.1f}%)")
         lines.append(f"Deployed: ${exp.get('total', 0):,.0f} ({exp.get('pct_of_portfolio', 0):.1f}%)")
-        lines.append(f"Positions: {exp.get('position_count', 0)}/{risk_cfg.get('max_positions', 5)}")
+        max_pos = risk_cfg.get('max_positions')
+        pos_cap = str(max_pos) if max_pos is not None else "unlimited"
+        lines.append(f"Positions: {exp.get('position_count', 0)}/{pos_cap}")
         lines.append(f"Day P&L: {a.get('day_pl_pct', 0):+.1f}%")
         lines.append(f"Risk limits: max_risk/trade={risk_cfg.get('max_risk_per_trade', 0.02)*100:.0f}% "
-                      f"max_concentration={risk_cfg.get('max_concentration', 0.25)*100:.0f}% "
+                      f"max_concentration(entry)={risk_cfg.get('max_concentration', 0.25)*100:.0f}% "
+                      f"concentration_trim={risk_cfg.get('concentration_trim_threshold', 0.32)*100:.0f}% "
                       f"max_daily_loss={risk_cfg.get('max_daily_loss', 0.02)*100:.0f}% "
                       f"max_drawdown={risk_cfg.get('max_drawdown', 0.08)*100:.0f}%")
 
-        lines.append("\nPOSITION DETAILS:")
+        lines.append("\nPOSITION DETAILS (positions 25-32% are WINNERS running, not breaches):")
         for p in context.get("positions", []):
             earn = f" EARNINGS={p['earnings_in_days']}d" if p.get("earnings_in_days") else ""
+            pct = p['position_pct']
+            tag = ""
+            if pct > risk_cfg.get("concentration_trim_threshold", 0.32) * 100:
+                tag = " ⚠ OVER_TRIM_THRESHOLD"
+            elif pct > risk_cfg.get("max_concentration", 0.25) * 100:
+                tag = " (winner running above entry cap — OK)"
             lines.append(
-                f"  {p['symbol']} {p['position_pct']:.1f}% of portfolio "
-                f"P&L={p['unrealized_plpc']:+.1f}%{earn}"
+                f"  {p['symbol']} {pct:.1f}% of portfolio "
+                f"P&L={p['unrealized_plpc']:+.1f}%{tag}{earn}"
             )
 
         # Kill-switch state
@@ -465,7 +477,7 @@ class RiskAnalyst(AnalystAgent):
 
 
 class MemoryAnalyst(AnalystAgent):
-    def __init__(self, model="glm-4.7"):
+    def __init__(self, model="glm-5.2"):
         super().__init__("memory_analyst", "Trade Historian", MEMORY_SYSTEM, model)
 
     def _build_prompt(self, context):
@@ -537,7 +549,9 @@ DECISION RULES:
 - The bot has been sitting at 100% cash for multiple cycles. This is UNACCEPTABLE for a paper trading account. You MUST deploy capital when there are any viable candidates.
 - If Risk Manager says "halt", do NOT add new positions. But "normal" or "low" risk means TRADE.
 - If Risk Manager notes opportunity cost (high cash, few positions), you MUST find entries. 0% deployment with 0 positions is not "waiting for a better setup" — it is paralysis.
-- Weight the Risk Manager highest on SIZING and HARD LIMITS (concentration >25%, max daily loss).
+- Weight the Risk Manager highest on SIZING and HARD LIMITS. BUT: concentration rules use a TIERED system — new BUYs are capped at 25% of portfolio at entry, but EXISTING positions are only trimmed above 32% (the trim threshold). A position at 26-31% is a WINNER RUNNING, not a breach. Do NOT sell or trim positions in the 25-32% band purely for concentration compliance — that creates churn and destroys returns. Only trim above 32%.
+- CRITICAL POSITION SIZING: Use size_pct to scale entries to conviction. A high-conviction trade uses 0.25 (25% of portfolio — the max). A medium-conviction exploratory position uses 0.10-0.15. A low-conviction toe-in-the-water uses 0.05. Do NOT default every BUY to 25% — vary your sizing.
+- CRITICAL EXIT SIZING: When trimming a position, use qty_pct to specify what fraction to sell. Use 0.25-0.33 for a partial trim (take some profits, keep the core). Use 0.50 for a significant reduction. Only omit qty_pct (defaults to 100% = full exit) when you want to CLOSE the entire position. NEVER sell 100% of a position solely because it crossed 25% concentration — that is the #1 churn pattern.
 - Weight the Technical Analyst highest on entry/exit timing.
 - Weight the News Analyst highest on catalyst-driven moves.
 - Weight the Multi-Strategy Alpha Analysis as a systematic confirmation — when 4+ of 7 strategies agree, that's strong.
@@ -566,23 +580,37 @@ Output STRICT JSON only — no markdown, no explanation outside JSON:
   },
   "actions": [
     {
-      "action": "BUY|SELL|CLOSE|HOLD",
+      "action": "BUY|SELL|TRIM|CLOSE|HOLD",
       "symbol": "AAPL",
       "thesis": "comprehensive rationale citing which analysts support this",
       "conviction": "high|medium|low",
-      "risk_pct": 0.02,
+      "size_pct": 0.25,
       "supporting_analysts": ["macro", "technical", "news"]
+    },
+    {
+      "action": "TRIM",
+      "symbol": "XLE",
+      "thesis": "taking partial profits, uptrend intact",
+      "qty_pct": 0.25,
+      "conviction": "medium",
+      "supporting_analysts": ["technical", "risk"]
     }
   ],
   "summary": "1-2 sentence strategy for this cycle",
   "confidence": "high|medium|low"
-}"""
+}
+
+FIELD REFERENCE:
+- action: BUY (new entry), TRIM (partial sell — MUST include qty_pct), SELL (full exit), CLOSE (force close via Alpaca API), HOLD
+- size_pct (BUY only): fraction of portfolio for this position. 0.25=max conviction, 0.15=medium, 0.05=exploratory. Omitting defaults to risk-based sizing which historically maxes at 25%.
+- qty_pct (TRIM/SELL): fraction of the HELD position to sell. 0.25=trim a quarter, 0.50=halve it. OMITTING qty_pct means full exit (100%). Use TRIM+qty_pct for partial profit-taking.
+- risk_pct: optional risk budget override (default 0.02 = 2%), clamped to max 2%."""
 
 
 class DeskChief:
     """The orchestrator: collects briefings, synthesizes final trade plan."""
 
-    def __init__(self, model="glm-4.7"):
+    def __init__(self, model="glm-5.2"):
         self.model = model
         self.system_prompt = DESK_CHIEF_SYSTEM
 
@@ -594,7 +622,7 @@ class DeskChief:
             {"role": "user", "content": prompt},
         ]
         raw = glm_chat(messages, model=self.model, temperature=0.2,
-                       max_tokens=3000, timeout=180)
+                       max_tokens=6000, timeout=240)
 
         plan = self._parse(raw)
         plan["raw_response"] = raw
@@ -697,7 +725,7 @@ class DeskChief:
 class TradingFloor:
     """Multi-agent trading floor: 5 analysts → Desk Chief → Risk Governor → Execute."""
 
-    def __init__(self, model="glm-4.7"):
+    def __init__(self, model="glm-5.2"):
         self.model = model
         self.agents = [
             MacroAnalyst(model),
@@ -847,46 +875,50 @@ class TradingFloor:
         except Exception as e:
             logger.warning("Journal cycle record failed: %s", e)
 
-        # Record each executed trade action
+        # Register cycle-executed BUYs for journal reconciliation (with regime
+        # context the executor doesn't have). reconcile_journal() below records
+        # them at REAL fill prices. ALL closes (SELL/CLOSE/TRIM/bracket legs)
+        # are likewise applied by reconcile from actual fills — single writer,
+        # no double-counting, real prices.
         results = execution.get("results", [])
         for r in results:
             status = r.get("status", "")
             act = r.get("action", "").upper()
             sym = r.get("symbol", "")
 
-            # Only record actual submissions (not dry runs or skips)
+            # Only actual submissions (not dry runs or skips)
             if status not in ("submitted", "executed"):
                 continue
-            if not sym:
+            if not sym or act != "BUY":
+                continue
+            oid = r.get("order_id")
+            if not oid:
                 continue
 
             try:
                 import trade_journal as tj
-                if act == "BUY":
-                    tj.record_trade(
-                        symbol=sym, side="BUY",
-                        qty=r.get("qty"),
-                        entry_price=r.get("entry"),
-                        stop_price=r.get("stop"),
-                        target_price=r.get("target"),
-                        position_pct=r.get("pos_pct"),
-                        risk_pct=r.get("risk_pct"),
-                        thesis=r.get("thesis", plan.get("summary", "")),
-                        strategy="ai_multi_agent",
-                        regime=regime,
-                        status="open",
-                    )
-                elif act in ("SELL", "CLOSE"):
-                    tj.close_trade(
-                        symbol=sym,
-                        exit_price=r.get("exit_price"),
-                        pnl_dollars=r.get("pnl_dollars"),
-                        pnl_pct=r.get("pnl_pct"),
-                        outcome="closed",
-                        thesis=r.get("thesis", ""),
-                    )
+                tj.record_pending(oid, "buy", {
+                    "thesis": r.get("thesis", plan.get("summary", "")),
+                    "strategy": "ai_multi_agent",
+                    "regime": regime,
+                    "stop_price": r.get("stop"),
+                    "target_price": r.get("target"),
+                    "position_pct": r.get("pos_pct"),
+                    "risk_pct": r.get("risk_pct"),
+                })
             except Exception as e:
-                logger.warning("Journal trade record failed for %s: %s", sym, e)
+                logger.warning("Pending buy registration failed for %s: %s", sym, e)
+
+        # Reconcile journal against broker fills — applies every filled sell
+        # (TRIMs, stop-outs, take-profit legs, manual exits) FIFO against open
+        # lots at real fill prices, and backfills any missing buys. Idempotent
+        # via broker_order_id + applied_sells markers; self-healing next cycle.
+        try:
+            rec = tj.reconcile_journal()
+            if rec.get("buys_added") or rec.get("sells_applied"):
+                logger.info("Journal reconciled with broker: %s", rec)
+        except Exception as e:
+            logger.warning("Journal reconcile failed (non-fatal): %s", e)
 
         # Store balanced context to supermemory (not just losses)
         self._store_cycle_memory(context, plan, execution)
@@ -1151,8 +1183,8 @@ if __name__ == "__main__":
                     help="LIVE submit orders (default: dry run)")
     ap.add_argument("--briefings-only", action="store_true",
                     help="Run analysts + show briefings, skip Desk Chief synthesis")
-    ap.add_argument("--model", default="glm-4.7",
-                    help="Model to use (default: glm-4.7)")
+    ap.add_argument("--model", default="glm-5.2",
+                    help="Model to use (default: glm-5.2)")
     args = ap.parse_args()
 
     floor = TradingFloor(model=args.model)

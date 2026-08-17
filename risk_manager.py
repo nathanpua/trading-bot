@@ -5,7 +5,8 @@ and portfolio risk rules.
 Core principles:
 - Never risk more than max_risk_pct of portfolio per trade (default 2%)
 - Position size = (Portfolio × risk%) / (entry - stop_loss)
-- Maximum concurrent positions (default 5)
+- Unlimited concurrent positions by default (max_positions=None);
+  capital is bounded by per-trade risk %, concentration caps, and exposure
 - Sector concentration limits
 """
 
@@ -13,7 +14,8 @@ import math
 
 
 def calculate_position_size(portfolio_value, entry_price, stop_loss_price,
-                            max_risk_pct=0.02, max_position_pct=0.25):
+                            max_risk_pct=0.02, max_position_pct=0.25,
+                            size_pct=None):
     """
     Calculate position size based on risk percentage.
 
@@ -27,6 +29,11 @@ def calculate_position_size(portfolio_value, entry_price, stop_loss_price,
             share count huge — e.g. QQQ at ATR 15.8 / price 740 wants 84 shares
             = 62% concentration. The cap prevents that over-concentration. When
             it binds, actual risk per trade drops below max_risk_pct (safer).
+        size_pct: target position size as fraction of portfolio (e.g. 0.10 = 10%).
+            When provided, this is the DESIRED size — the AI saying "I want a
+            10% position" instead of always maxing out at 25%. Clamped to
+            max_position_pct so it can never exceed the hard cap. When None,
+            falls back to risk-based sizing capped by concentration (legacy mode).
 
     Returns:
         dict with shares, risk_amount, risk_per_share, position_value
@@ -39,7 +46,19 @@ def calculate_position_size(portfolio_value, entry_price, stop_loss_price,
 
     shares_by_risk = math.floor(risk_amount / risk_per_share)
     shares_by_concentration = math.floor(portfolio_value * max_position_pct / entry_price)
-    shares = min(shares_by_risk, shares_by_concentration)
+
+    if size_pct is not None:
+        # AI-requested target size: clamp to hard cap, also bounded by risk.
+        # This lets the AI say "low conviction, 5% position" instead of always 25%.
+        effective_pct = min(size_pct, max_position_pct)
+        shares_by_size = math.floor(portfolio_value * effective_pct / entry_price)
+        shares = min(shares_by_size, shares_by_concentration)
+        capped_by = "size_pct" if shares_by_size < shares_by_concentration else "concentration"
+    else:
+        # Legacy mode: risk-based sizing, capped by concentration.
+        shares = min(shares_by_risk, shares_by_concentration)
+        capped_by = "concentration" if shares_by_concentration < shares_by_risk else "risk"
+
     position_value = shares * entry_price
 
     return {
@@ -51,7 +70,9 @@ def calculate_position_size(portfolio_value, entry_price, stop_loss_price,
         "position_pct": round((position_value / portfolio_value) * 100, 2),
         "risk_pct": round((shares * risk_per_share / portfolio_value) * 100, 2),
         "max_risk_pct": round(max_risk_pct * 100, 2),
-        "capped_by_concentration": shares_by_concentration < shares_by_risk,
+        "capped_by": capped_by,
+        # Keep legacy field for backward compat (old code checks capped_by_concentration)
+        "capped_by_concentration": capped_by == "concentration",
     }
 
 
@@ -84,36 +105,50 @@ def calculate_stops(entry_price, atr, risk_mult=1.5, reward_mult=2.0):
     }
 
 
-def check_portfolio_risk(positions, portfolio_value, max_positions=5, max_position_pct=0.25):
+def check_portfolio_risk(positions, portfolio_value, max_positions=None,
+                         max_position_pct=0.25, concentration_trim_threshold=None):
     """
     Check if portfolio risk rules are satisfied before adding a new position.
-    
+
     Args:
         positions: list of current position dicts (from alpaca_client.get_positions)
         portfolio_value: current portfolio value
-        max_positions: max concurrent positions allowed
-        max_position_pct: max % of portfolio in a single position
-    
+        max_positions: max concurrent positions allowed; None = unlimited
+                       (capital is bounded by concentration/exposure instead)
+        max_position_pct: max % of portfolio for a NEW position at entry
+        concentration_trim_threshold: trim EXISTING positions only above this %.
+            Defaults to max_position_pct + 7% tolerance band if not specified.
+            This prevents churn: a position bought at 25% that drifts to 25.5%
+            due to price movement should NOT trigger a trim. Only trim when the
+            position has genuinely grown to dominate the portfolio.
+
     Returns:
         dict with allowed (bool), reason, current_exposure
     """
+    if concentration_trim_threshold is None:
+        concentration_trim_threshold = max_position_pct + 0.07  # 7% tolerance band
+
     num_positions = len(positions)
     total_exposure = sum(float(p["market_value"]) for p in positions)
     exposure_pct = (total_exposure / portfolio_value * 100) if portfolio_value > 0 else 0
-    
+
     issues = []
-    
-    if num_positions >= max_positions:
+
+    if max_positions is not None and num_positions >= max_positions:
         issues.append(f"Max positions reached ({num_positions}/{max_positions})")
-    
+
     if exposure_pct > 80:
         issues.append(f"High exposure ({exposure_pct:.1f}% of portfolio)")
-    
-    # Check individual position concentration
+
+    # Check individual position concentration.
+    # IMPORTANT: use the TRIM threshold for existing positions, not the entry cap.
+    # A position bought at 24% that grows to 26% because the stock went up is NOT
+    # a risk breach — it's a winner. Trimming it just creates churn + taxes.
+    # Only flag if position exceeds the trim threshold (default 32%).
     for p in positions:
         pos_pct = float(p["market_value"]) / portfolio_value * 100 if portfolio_value > 0 else 0
-        if pos_pct > max_position_pct * 100:
-            issues.append(f"{p['symbol']} over weight ({pos_pct:.1f}% > {max_position_pct*100:.0f}%)")
+        if pos_pct > concentration_trim_threshold * 100:
+            issues.append(f"{p['symbol']} over weight ({pos_pct:.1f}% > {concentration_trim_threshold*100:.0f}% trim threshold)")
     
     return {
         "allowed": len(issues) == 0,

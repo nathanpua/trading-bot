@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import alpaca_client as ac
 import indicators as ind
 import finnhub_client as fc
+import lse_client as lse
 
 def get_state(with_technicals=True):
     acct = ac.get_account()
@@ -71,10 +72,10 @@ def get_state(with_technicals=True):
                 pos["technicals"] = {"error": str(e)[:60]}
         state["positions"].append(pos)
 
-    # Regime proxies
-    for sym in ("VIXY", "UVXY", "SPY", "QQQ", "XLU", "TLT", "DXY"):
+    # Regime proxies — use LSE-available symbols
+    for sym in ("SPY", "QQQ", "TLT", "GLD", "XLE", "XLF", "EEM"):
         try:
-            q = fc.get_quote(sym)
+            q = lse.get_quote(sym)
             c = float(q.get("c") or 0)
             if c > 0:
                 state["regime_proxies"][sym] = {
@@ -83,12 +84,11 @@ def get_state(with_technicals=True):
         except Exception:
             continue
 
-    # Quick quotes for watchlist
-    watchlist = ["MU", "MRVL", "NVDA", "AVGO", "AAPL", "MSFT", "AMD", "COIN",
-                 "INTC", "LRCX", "SOXX", "SMH", "WDC", "STX"]
-    for sym in watchlist:
+    # Quick quotes for ETF universe
+    from strategy_engine import get_universe_symbols
+    for sym in get_universe_symbols():
         try:
-            q = fc.get_quote(sym)
+            q = lse.get_quote(sym)
             c = float(q.get("c") or 0)
             if c > 0:
                 state["watchlist_quotes"][sym] = {

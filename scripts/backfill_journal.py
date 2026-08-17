@@ -103,7 +103,8 @@ def main():
                 exit_price = None
                 try:
                     import finnhub_client as fc
-                    q = fc.get_quote(sym)
+import lse_client as lse
+                    q = lse.get_quote(sym)
                     exit_price = float(q.get("c") or 0) or None
                 except Exception:
                     pass

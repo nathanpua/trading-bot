@@ -30,6 +30,7 @@ from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
 import alpaca_client as ac
 import indicators as ind
 import finnhub_client as fc
+import lse_client as lse
 import risk_manager as rm
 
 
@@ -42,7 +43,7 @@ def build_plan(symbols, portfolio_value):
         if df is None or df.empty:
             print(f"  {sym}: no data, skipping"); continue
         atr = float(df.iloc[-1]["atr"])
-        entry = float(fc.get_quote(sym)["c"])
+        entry = float(lse.get_quote(sym)["c"])
         stops = rm.calculate_stops(entry, atr)
         res = rm.assess_trade(sym, entry, stops["stop_loss"], portfolio_value, positions)
         if res["recommendation"] != "GO":

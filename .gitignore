@@ -23,6 +23,7 @@ ENV/
 /logs/
 *.db
 *.json
+archive_*/
 
 # Frontend (dashboard)
 node_modules/
