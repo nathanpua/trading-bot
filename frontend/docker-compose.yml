@@ -5,7 +5,7 @@ services:
     container_name: trading-dashboard
     restart: unless-stopped
     ports:
-      - "8010:8010"
+      - "127.0.0.1:8010:8010"
     environment:
       - PYTHONPATH=/app/backend:/app/bot
     volumes:

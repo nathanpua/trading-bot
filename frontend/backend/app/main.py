@@ -46,6 +46,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Trading Bot Dashboard",
     lifespan=lifespan,
+    docs_url=None,        # public deployment: no swagger UI
+    redoc_url=None,       # no redoc
+    openapi_url=None,     # no machine-readable route map
 )
 
 app.add_middleware(

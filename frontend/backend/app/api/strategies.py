@@ -7,6 +7,10 @@ from fastapi import APIRouter, Query
 router = APIRouter(prefix="/api/strategies", tags=["strategies"])
 logger = logging.getLogger("dashboard")
 
+# TTL cache for /scan — protects the LSE free-tier quota (200 calls/min)
+# from public traffic through the Tailscale Funnel.
+_SCAN_CACHE: dict = {}
+
 
 @router.get("")
 def list_strategies():
@@ -35,7 +39,20 @@ def list_strategies():
 
 @router.get("/scan")
 def scan_universe(limit: int = Query(20, ge=1, le=50)):
-    """Run all strategies on the trading universe."""
+    """Run all strategies on the trading universe.
+
+    Cached for 5 minutes server-side: each scan costs ~1 LSE API call per
+    symbol (25 for the full universe), and the dashboard is publicly exposed
+    via Tailscale Funnel — unthrottled public traffic could exhaust the free
+    200 calls/min quota the trading bot depends on. The bot itself scans
+    through its own path (cron → strategy_engine), unaffected by this cache.
+    """
+    import time as _time
+    cache_key = f"scan_{limit}"
+    now = _time.time()
+    cached = _SCAN_CACHE.get(cache_key)
+    if cached and now - cached[0] < 300:  # 5-minute TTL
+        return cached[1]
     try:
         import sys, os
         bot_root = os.environ.get("BOT_ROOT", "/app/bot")
@@ -44,7 +61,7 @@ def scan_universe(limit: int = Query(20, ge=1, le=50)):
         from strategy_engine import scan_universe as do_scan
         result = do_scan(max_symbols=limit)
         # Strip non-serializable parts
-        return {
+        payload = {
             "timestamp": result["timestamp"],
             "symbols_scanned": result["symbols_scanned"],
             "symbols_valid": result["symbols_valid"],
@@ -73,6 +90,8 @@ def scan_universe(limit: int = Query(20, ge=1, le=50)):
         logger.warning("Strategy scan failed: %s", e)
         return {"error": str(e)[:200], "results": []}
 
+    _SCAN_CACHE[cache_key] = (now, payload)
+    return payload
 
 @router.get("/scan/{symbol}")
 def scan_symbol(symbol: str):
