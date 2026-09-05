@@ -791,7 +791,7 @@ class TradingFloor:
         execution = self._execute(valid_actions, dry_run)
 
         # 5b. Record trades to journal DB (for dashboard stats)
-        self._record_to_journal(context, plan, execution, dry_run)
+        self._record_to_journal(context, briefings, plan, execution, dry_run)
 
         # 6. Build report + log
         report = self._build_report(context, briefings, plan, execution, timestamp)
@@ -846,10 +846,9 @@ class TradingFloor:
             return {"executed": False, "dry_run": dry_run,
                     "results": [{"status": "error", "error": str(e)}]}
 
-    def _record_to_journal(self, context, plan, execution, dry_run):
-        """Record executed trades and cycle summary to the journal DB.
-
-        This populates the dashboard's Trades and Analysis tabs.
+    def _record_to_journal(self, context, briefings, plan, execution, dry_run):
+        """Record executed trades, cycle summary, and historian lessons to the
+        journal DB. This populates the dashboard's Trades and Analysis tabs.
         """
         try:
             import trade_journal as tj
