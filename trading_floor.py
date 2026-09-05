@@ -5,7 +5,7 @@ Multi-Agent Trading Floor — collaborative AI decision system.
 ARCHITECTURE
 ============
 Five specialized analyst agents run in PARALLEL, each examining a different
-facet of the market. A Desk Chief (also GLM 5.2) reads all briefings
+facet of the market. A Desk Chief (also GLM-5.3-Flash) reads all briefings
 and produces the final trade plan.
 
     ┌─────────────────────────────────────────────────────────┐
@@ -60,7 +60,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import yaml
-from ai_agent import glm_chat, build_market_context, _safe_call
+from ai_agent import glm_chat, build_market_context, _safe_call, GLM_MODEL
 import alpaca_client as ac
 import risk_manager as rm
 import finnhub_client as fc
@@ -75,11 +75,11 @@ class AnalystAgent:
 
     Each agent:
     1. Receives the shared market context
-    2. Asks GLM 5.2 to analyze its specific domain
+    2. Asks GLM-5.3-Flash to analyze its specific domain
     3. Returns a structured briefing (dict with assessment + signals)
     """
 
-    def __init__(self, name, role, system_prompt, model="glm-5.2", temperature=0.2):
+    def __init__(self, name, role, system_prompt, model=GLM_MODEL, temperature=0.2):
         self.name = name
         self.role = role
         self.system_prompt = system_prompt
@@ -296,7 +296,7 @@ Output STRICT JSON only:
 
 
 class MacroAnalyst(AnalystAgent):
-    def __init__(self, model="glm-5.2"):
+    def __init__(self, model=GLM_MODEL):
         super().__init__("macro_analyst", "Macro Analyst", MACRO_SYSTEM, model)
 
     def _build_prompt(self, context):
@@ -337,7 +337,7 @@ class MacroAnalyst(AnalystAgent):
 
 
 class NewsAnalyst(AnalystAgent):
-    def __init__(self, model="glm-5.2"):
+    def __init__(self, model=GLM_MODEL):
         super().__init__("news_analyst", "News Analyst", NEWS_SYSTEM, model)
 
     def _build_prompt(self, context):
@@ -374,7 +374,7 @@ class NewsAnalyst(AnalystAgent):
 
 
 class TechnicalAnalyst(AnalystAgent):
-    def __init__(self, model="glm-5.2"):
+    def __init__(self, model=GLM_MODEL):
         super().__init__("technical_analyst", "Technical Analyst", TECHNICAL_SYSTEM, model)
 
     def _build_prompt(self, context):
@@ -408,7 +408,7 @@ class TechnicalAnalyst(AnalystAgent):
 
 
 class RiskAnalyst(AnalystAgent):
-    def __init__(self, model="glm-5.2"):
+    def __init__(self, model=GLM_MODEL):
         super().__init__("risk_analyst", "Risk Manager", RISK_SYSTEM, model)
 
     def _build_prompt(self, context):
@@ -477,7 +477,7 @@ class RiskAnalyst(AnalystAgent):
 
 
 class MemoryAnalyst(AnalystAgent):
-    def __init__(self, model="glm-5.2"):
+    def __init__(self, model=GLM_MODEL):
         super().__init__("memory_analyst", "Trade Historian", MEMORY_SYSTEM, model)
 
     def _build_prompt(self, context):
@@ -545,24 +545,27 @@ Five specialist analysts have given you their briefings:
 Your job: synthesize ALL five briefings into a single, decisive trade plan.
 
 DECISION RULES:
-- You are running a PAPER TRADING account designed to LEARN and profit. Inaction is NOT a safe default — it's a failure mode. Act when the evidence supports it.
-- The bot has been sitting at 100% cash for multiple cycles. This is UNACCEPTABLE for a paper trading account. You MUST deploy capital when there are any viable candidates.
-- If Risk Manager says "halt", do NOT add new positions. But "normal" or "low" risk means TRADE.
-- If Risk Manager notes opportunity cost (high cash, few positions), you MUST find entries. 0% deployment with 0 positions is not "waiting for a better setup" — it is paralysis.
+- You are running a PAPER TRADING account designed to LEARN and profit. Deploy capital when the evidence supports it — but a cycle that ends in HOLD with cash is acceptable when the candidate list is genuinely weak. Forced entries into marginal setups are ALSO a failure mode (live record: avg win +$28 vs avg loss −$53 — forced low-quality entries lose more than they make).
+- If Risk Manager says "halt", do NOT add new positions. But "normal" or "low" risk means TRADE when setups are good.
+- If Risk Manager notes opportunity cost (high cash, few positions), find the BEST candidate rather than the first — one strong position beats three marginal ones.
 - Weight the Risk Manager highest on SIZING and HARD LIMITS. BUT: concentration rules use a TIERED system — new BUYs are capped at 25% of portfolio at entry, but EXISTING positions are only trimmed above 32% (the trim threshold). A position at 26-31% is a WINNER RUNNING, not a breach. Do NOT sell or trim positions in the 25-32% band purely for concentration compliance — that creates churn and destroys returns. Only trim above 32%.
 - CRITICAL POSITION SIZING: Use size_pct to scale entries to conviction. A high-conviction trade uses 0.25 (25% of portfolio — the max). A medium-conviction exploratory position uses 0.10-0.15. A low-conviction toe-in-the-water uses 0.05. Do NOT default every BUY to 25% — vary your sizing.
 - CRITICAL EXIT SIZING: When trimming a position, use qty_pct to specify what fraction to sell. Use 0.25-0.33 for a partial trim (take some profits, keep the core). Use 0.50 for a significant reduction. Only omit qty_pct (defaults to 100% = full exit) when you want to CLOSE the entire position. NEVER sell 100% of a position solely because it crossed 25% concentration — that is the #1 churn pattern.
 - Weight the Technical Analyst highest on entry/exit timing.
 - Weight the News Analyst highest on catalyst-driven moves.
-- Weight the Multi-Strategy Alpha Analysis as a systematic confirmation — when 4+ of 7 strategies agree, that's strong.
+- Weight the Multi-Strategy Alpha Analysis as a systematic VETO: the governor REJECTS BUYs whose composite score is below -0.15. Do not propose them — when the alpha zoo is bearish on a symbol, entering is fighting your own systematic layer.
 - Trade Historian provides context ONLY, never a veto. Their pattern_warning MUST be ignored unless they cite >10 closed trades in the specific category. If they say "0-for-4" or "insufficient sample", you are FREE TO TRADE.
 - ACT ON MAJORITY CONVICTION: if 2+ analysts lean bullish on a setup, take the trade even if not unanimous. Perfect consensus rarely exists. A 2-out-of-5 bullish vote with a good candidate IS a trade.
+- CHURN DISCIPLINE (the governor ENFORCES these — do not fight them):
+  * TRIMs of PROFITABLE positions held fewer than 3 trading days are REJECTED. Loss-cutting and full exits always pass.
+  * New entries on Fridays are auto-half-sized by the executor.
+  * Universe groups share one exposure budget (35% per group, e.g. all gold names combined).
+  * Most cycles should end with 0-2 actions. If your plan keeps flipping in and out of the same names, you are churning — HOLD instead and let bracket stops/targets work.
 - Maximum 3 new BUYs per cycle. Prefer quality over quantity, but DO trade when setups are good.
-- Avoiding all trades is a FAILURE MODE. The bot is designed to learn by doing.
 
-MANDATORY ACTION RULE:
-- If there are candidates available AND the portfolio has >50% cash AND fewer than 3 positions AND Risk Manager says risk is "low" or "moderate":
-  You MUST issue at least one BUY action OR explicitly justify in your summary why EVERY candidate fails on technical, fundamental, AND news criteria simultaneously. A blanket "weak entry quality" without specific analysis of each candidate is not sufficient justification.
+MANDATORY JUSTIFICATION RULE (replaces forced action):
+- If you take NO position-changing action while candidates exist AND the portfolio has >50% cash AND fewer than 3 positions AND Risk Manager says risk is "low" or "moderate":
+  Your summary must explain, with specific per-candidate analysis, why EVERY candidate fails on technical, fundamental, AND news criteria simultaneously. A blanket "weak entry quality" without specific analysis is not sufficient.
 
 USER PREFERENCES (CRITICAL):
 - The user PREFERS to hold through earnings when profitable. Do NOT suggest flattening before earnings as a blanket rule.
@@ -610,7 +613,7 @@ FIELD REFERENCE:
 class DeskChief:
     """The orchestrator: collects briefings, synthesizes final trade plan."""
 
-    def __init__(self, model="glm-5.2"):
+    def __init__(self, model=GLM_MODEL):
         self.model = model
         self.system_prompt = DESK_CHIEF_SYSTEM
 
@@ -622,7 +625,7 @@ class DeskChief:
             {"role": "user", "content": prompt},
         ]
         raw = glm_chat(messages, model=self.model, temperature=0.2,
-                       max_tokens=6000, timeout=240)
+                       timeout=240)
 
         plan = self._parse(raw)
         plan["raw_response"] = raw
@@ -725,7 +728,7 @@ class DeskChief:
 class TradingFloor:
     """Multi-agent trading floor: 5 analysts → Desk Chief → Risk Governor → Execute."""
 
-    def __init__(self, model="glm-5.2"):
+    def __init__(self, model=GLM_MODEL):
         self.model = model
         self.agents = [
             MacroAnalyst(model),
@@ -778,11 +781,11 @@ class TradingFloor:
                 "timestamp": timestamp,
             }
 
-        # 4. Risk governor validates
+        # 4. Risk governor validates (composite veto, min-hold, kill-switch)
         from ai_agent import AITradingAgent
-        agent = AITradingAgent.__new__(AITradingAgent)
-        agent.cfg = self.cfg
-        valid_actions, rejections = agent.validate_plan(plan)
+        governor = AITradingAgent()
+        valid_actions, rejections = governor.validate_plan(
+            plan, strategy_scan=context.get("strategy_scan"))
 
         # 5. Execute
         execution = self._execute(valid_actions, dry_run)
@@ -874,6 +877,21 @@ class TradingFloor:
             )
         except Exception as e:
             logger.warning("Journal cycle record failed: %s", e)
+
+        # Persist the Trade Historian's lessons to the journal DB so they feed
+        # back into future cycles (previously the lessons table stayed empty).
+        try:
+            mem_brief = briefings.get("memory_analyst", {}) or {}
+            recent = {l.get("lesson") for l in tj.get_stats().get("recent_lessons", [])}
+            for l in (mem_brief.get("relevant_lessons") or [])[:5]:
+                text = (l.get("lesson") or "").strip()
+                if not text or text in recent:
+                    continue
+                tj.add_lesson("memory", text[:500],
+                              evidence=(l.get("applies_to") or "")[:300],
+                              confidence=l.get("confidence", "medium"))
+        except Exception as e:
+            logger.warning("Lesson persistence failed (non-fatal): %s", e)
 
         # Register cycle-executed BUYs for journal reconciliation (with regime
         # context the executor doesn't have). reconcile_journal() below records
@@ -1183,8 +1201,8 @@ if __name__ == "__main__":
                     help="LIVE submit orders (default: dry run)")
     ap.add_argument("--briefings-only", action="store_true",
                     help="Run analysts + show briefings, skip Desk Chief synthesis")
-    ap.add_argument("--model", default="glm-5.2",
-                    help="Model to use (default: glm-5.2)")
+    ap.add_argument("--model", default=GLM_MODEL,
+                    help=f"Model to use (default: {GLM_MODEL})")
     args = ap.parse_args()
 
     floor = TradingFloor(model=args.model)

@@ -25,6 +25,7 @@ import indicators as ind
 import risk_manager as rm
 import finnhub_client as fc
 import lse_client as lse
+import breadth
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,10 @@ def execute_plan(plan, cfg, dry_run=True):
     positions = {p["symbol"]: p for p in ac.get_positions()}
     clock = ac.is_market_open()
     market_open = clock.get("is_open", False)
+    # Last persisted regime snapshot — used to stamp journal buys when the
+    # plan doesn't carry a regime (manual/standalone executor runs).
+    regime_now = breadth.load_regime_now() or {}
+    sleeve_pending = {}  # sleeve name -> BUY cost approved so far this plan
 
     results = []
     for action in plan:
@@ -196,6 +201,38 @@ def execute_plan(plan, cfg, dry_run=True):
                                 "reason": "sizing = 0 (risk budget exhausted or stop too tight)"})
                 continue
 
+            # Friday half-size: Friday entries were the only negative weekday in
+            # the first month of live trading (-$495 over 31 trades). A/B lever.
+            notes = []
+            fri_factor = float(cfg.get("position_management", {}).get(
+                "friday_entry_size_factor", 1.0) or 1.0)
+            if 0 < fri_factor < 1.0 and datetime.now(timezone.utc).weekday() == 4:
+                shares = int(shares * fri_factor)
+                notes.append(f"friday factor {fri_factor} applied")
+
+            # Sleeve cap: correlated universe groups share one exposure budget
+            # (e.g. GLD+SLV+GDX combined <= max_sleeve_exposure).
+            sleeve = rm.sleeve_of(sym, cfg)
+            allowed_value, sleeve_reason = rm.check_sleeve_cap(
+                sym, shares * entry, cfg, list(positions.values()), pv,
+                pending_value=sleeve_pending.get(sleeve, 0.0))
+            if allowed_value <= 0:
+                results.append({"action": "BUY", "symbol": sym, "status": "skipped",
+                                "reason": sleeve_reason})
+                continue
+            if allowed_value < shares * entry:
+                shares = int(allowed_value / entry)
+                if shares < 1:
+                    results.append({"action": "BUY", "symbol": sym, "status": "skipped",
+                                    "reason": sleeve_reason})
+                    continue
+                notes.append(sleeve_reason)
+
+            if shares <= 0:
+                results.append({"action": "BUY", "symbol": sym, "status": "skipped",
+                                "reason": "sizing = 0 after caps"})
+                continue
+
             # Check portfolio limits
             held_count = len(positions) + len([r for r in results if r.get("status") in ("executed", "dry_run") and r.get("action") == "BUY"])
             if (sym not in positions and rcfg.get("max_positions") is not None
@@ -219,6 +256,8 @@ def execute_plan(plan, cfg, dry_run=True):
                 "cost": round(shares * entry, 2),
                 "thesis": thesis,
             }
+            if notes:
+                order["notes"] = "; ".join(notes)
 
             if dry_run:
                 order["status"] = "dry_run"
@@ -238,14 +277,16 @@ def execute_plan(plan, cfg, dry_run=True):
                     order["order_id"] = str(res.id)
                     results.append(order)
                     cash -= shares * entry
+                    sleeve_pending[sleeve] = sleeve_pending.get(sleeve, 0.0) + shares * entry
                     # Register for journal reconciliation with AI context;
                     # reconcile_journal() records it at the REAL fill price.
+                    # risk_pct/position_pct are in PERCENT units (0.47 = 0.47%).
                     try:
                         import trade_journal as tj
                         tj.record_pending(str(res.id), "buy", {
                             "thesis": thesis,
                             "strategy": "ai_multi_agent",
-                            "regime": action.get("_regime", ""),
+                            "regime": action.get("_regime", "") or regime_now.get("regime", ""),
                             "stop_price": round(stop, 2),
                             "target_price": round(target, 2),
                             "position_pct": round(sizing["position_pct"], 1),

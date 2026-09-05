@@ -142,6 +142,9 @@ def run_backtest(symbol, strategy_cls=SignalStrategy, timeframe="1Day",
         "open": "Open", "high": "High", "low": "Low",
         "close": "Close", "volume": "Volume",
     })
+    # Cached bars come back with the timestamp column as strings; backtrader
+    # requires a DatetimeIndex (it calls .to_pydate() internally).
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
     df = df.set_index("timestamp")
 
     # Create backtrader feed. SignalStrategy needs the custom SignalData feed so

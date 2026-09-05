@@ -1,6 +1,7 @@
 """Smoke test: verify data depth + that SignalStrategy now produces trades."""
 import warnings
 warnings.filterwarnings("ignore")
+import pandas as pd
 import alpaca_client
 import backtest
 
@@ -9,7 +10,9 @@ for sym in ("AAPL", "SMH"):
     df = alpaca_client.get_bars(sym, timeframe="1Day", limit=500)
     if "symbol" in df.columns:
         df = df[df["symbol"] == sym]
-    rng = f"{df['timestamp'].min().date()} -> {df['timestamp'].max().date()}" if not df.empty else "EMPTY"
+    # cached bars carry timestamps as strings; coerce before .date()
+    ts = pd.to_datetime(df["timestamp"]) if not df.empty else pd.Series(dtype="datetime64[ns]")
+    rng = f"{ts.min().date()} -> {ts.max().date()}" if not df.empty else "EMPTY"
     print(f"  {sym}: {len(df)} bars  {rng}")
 
 print("\n=== Single backtests (limit=750) ===")

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-AI Decision Agent — GLM 5.2-powered trading intelligence layer.
+AI Decision Agent — GLM-5.3-Flash-powered trading intelligence layer.
 
 This module wraps the deterministic trading engine with an LLM "desk chief"
 that reviews the full market context (technicals, news, portfolio state,
 trade memory, journal stats) and produces a structured trade plan.
 
 Architecture:
-    Market Data → Context Builder → GLM 5.2 (decision) → Risk Governor → Execute
+    Market Data → Context Builder → GLM-5.3-Flash (decision) → Risk Governor → Execute
 
 The AI is ADVISORY on WHAT to trade (entries, exits, holds).
 The risk_manager is AUTHORITATIVE on HOW MUCH (sizing, stops, limits).
@@ -25,7 +25,7 @@ import json
 import time
 import logging
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,7 @@ import indicators as ind
 import risk_manager as rm
 import finnhub_client as fc
 import lse_client as lse
+import breadth
 
 # ───────────────────────── GLM API Client ─────────────────────────
 
@@ -72,16 +73,23 @@ def _load_glm_config():
     return key, base_url
 
 
-def glm_chat(messages, model="glm-5.2", temperature=0.3, max_tokens: int | None = 4096, timeout=180):
+# Default model for all agents. GLM-5.3-Flash is a forced-thinking model:
+# reasoning is always on (the API ignores "disabled"), so every call reasons
+# before answering.
+GLM_MODEL = "glm-5.3-flash"
+
+
+def glm_chat(messages, model=GLM_MODEL, temperature=0.3, max_tokens: int | None = None, timeout=180):
     """Call the GLM (Z.AI) chat completions API.
 
     Returns the assistant message content string.
     Falls back gracefully on errors.
 
-    GLM 5.2 is a reasoning model: it produces reasoning_content first, then
-    content. We need max_tokens >= 2000 or content will be empty (all tokens
-    consumed by reasoning). The thinking parameter is NOT set — we let the
-    model use its default reasoning depth.
+    GLM-5.3-Flash always produces reasoning_content before content (forced
+    thinking, cannot be disabled); we request it explicitly via
+    "thinking": {"type": "enabled"}. Reasoning tokens consume the completion
+    budget, so a hard max_tokens cap risks empty content — leave max_tokens
+    as None unless a caller truly needs one.
 
     If max_tokens is None, the parameter is omitted from the API payload
     entirely, letting the API apply its own default maximum. This is useful
@@ -100,6 +108,7 @@ def glm_chat(messages, model="glm-5.2", temperature=0.3, max_tokens: int | None 
         "model": model,
         "messages": messages,
         "temperature": temperature,
+        "thinking": {"type": "enabled"},
     }
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
@@ -108,7 +117,7 @@ def glm_chat(messages, model="glm-5.2", temperature=0.3, max_tokens: int | None 
     resp.raise_for_status()
     data = resp.json()
     content = data["choices"][0]["message"]["content"]
-    # GLM 5.2 may return empty content if max_tokens is too low (all consumed
+    # GLM may return empty content if max_tokens is too low (all consumed
     # by reasoning_content). Log a warning but return what we got.
     if not content:
         reasoning = data["choices"][0]["message"].get("reasoning_content", "")
@@ -125,6 +134,33 @@ def _safe_call(fn, *args, **kwargs):
         return fn(*args, **kwargs)
     except Exception as e:
         logger.debug("safe_call error: %s", e)
+        return None
+
+
+def tj_get_open_entry(symbol):
+    """Oldest open-lot entry timestamp for a symbol from the trade journal."""
+    try:
+        import trade_journal as tj
+        return tj.get_open_entry_ts(symbol)
+    except Exception:
+        return None
+
+
+def _trading_days_held(entry_ts, now=None):
+    """US trading days (weekdays) elapsed since entry_ts. None on bad input."""
+    try:
+        if isinstance(entry_ts, str):
+            entry_date = datetime.fromisoformat(entry_ts.replace("Z", "+00:00")).date()
+        else:
+            entry_date = entry_ts
+        today = (now or datetime.now(timezone.utc)).date()
+        days, d = 0, entry_date
+        while d < today:
+            if d.weekday() < 5:
+                days += 1
+            d += timedelta(days=1)
+        return days
+    except Exception:
         return None
 
 
@@ -210,6 +246,10 @@ def build_market_context(cfg):
     # 8. Journal stats
     ctx["journal"] = _get_journal_stats()
 
+    # Persist the regime snapshot so downstream consumers (journal reconcile
+    # stamping backfilled buys) know what regime the system is trading under.
+    breadth.save_regime_now(ctx["regime"])
+
     return ctx
 
 
@@ -286,10 +326,23 @@ def _assess_regime(cfg):
     else:
         regime_label = "NEUTRAL"
 
+    # Breadth internals gate: low VIX alone read RISK-ON on 177/178 cycles.
+    # Broad sector deterioration (net <= -5) forces RISK-OFF; negative net
+    # breadth caps RISK-ON at NEUTRAL — narrow leadership is not risk-on.
+    br = _safe_call(breadth.compute_breadth) or {}
+    net = br.get("net")
+    if net is not None:
+        reasons.append(f"breadth: {br.get('above')}/{br.get('total')} sectors above 20-SMA (net {net:+d})")
+        gated, gate_reason = breadth.apply_breadth_gate(regime_label, br)
+        if gate_reason:
+            reasons.append(gate_reason)
+        regime_label = gated
+
     return {
         "regime": regime_label,
         "vix_proxy": vix,
         "spy_trend": spy_trend,
+        "breadth_net": net,
         "reasons": reasons,
     }
 
@@ -476,7 +529,7 @@ You analyze market data, technical indicators, news, and historical trade memory
 2. **Manage existing positions before opening new ones**: Review each position's technicals vs entry thesis. Exit when thesis is invalidated.
 3. **Earnings catalyst awareness**: If earnings are within 5 days, prefer HOLDING through the catalyst (user preference) unless the position is at a loss AND technicals have deteriorated.
 4. **Confluence over single signals**: A buy signal is stronger when multiple indicators agree (RSI oversold + MACD positive + above SMA50).
-5. **Respect risk limits**: There is NO position-count limit — hold as many positions as conviction and capital justify. Capital is bounded instead by: max 25% concentration per NEW entry, max 2% risk per trade, max 90% total exposure. The risk manager will enforce these, but factor them into your plan.
+5. **Respect risk limits**: There is NO position-count limit — hold as many positions as conviction and capital justify. Capital is bounded instead by: max 25% concentration per NEW entry, max 2% risk per trade, max 90% total exposure, and a 35% cap per universe group (e.g. all gold-related positions combined). The governor also rejects BUYs whose multi-strategy composite score is bearish (<-0.15) and TRIMs of profitable positions held under 3 trading days — factor this into your plan rather than fighting the governor.
 6. **Cut losses, ride winners**: If a position is losing and the thesis is broken, exit. If winning and momentum continues, hold or let the trailing stop work.
 
 ## User Preferences (IMPORTANT)
@@ -516,9 +569,9 @@ Rules for actions:
 # ───────────────────────── AI Decision Agent ─────────────────────────
 
 class AITradingAgent:
-    """AI-powered trading decision agent using GLM 5.2."""
+    """AI-powered trading decision agent using GLM-5.3-Flash."""
 
-    def __init__(self, model="glm-5.2", temperature=0.3):
+    def __init__(self, model=GLM_MODEL, temperature=0.3):
         self.model = model
         self.temperature = temperature
         self.cfg = self._load_config()
@@ -529,7 +582,7 @@ class AITradingAgent:
             return yaml.safe_load(f)
 
     def decide(self):
-        """Full AI decision cycle: gather context → ask GLM 5.2 → parse plan.
+        """Full AI decision cycle: gather context → ask GLM-5.3-Flash → parse plan.
 
         Returns:
             dict with keys:
@@ -553,7 +606,7 @@ class AITradingAgent:
         logger.info("Querying %s for trade decisions...", self.model)
         try:
             raw = glm_chat(messages, model=self.model, temperature=self.temperature,
-                          max_tokens=4096, timeout=180)
+                          timeout=180)
         except Exception as e:
             logger.error("GLM API call failed: %s", e)
             return {
@@ -719,11 +772,24 @@ class AITradingAgent:
 
         return plan
 
-    def validate_plan(self, plan):
+    def validate_plan(self, plan, strategy_scan=None):
         """Validate the AI plan against safety rules.
+
+        Gates (beyond the kill-switch):
+        - composite veto: BUYs whose multi-strategy composite score is below
+          `strategy.composite_veto` (default -0.15) are rejected — the alpha
+          zoo disagreeing is not a buy signal.
+        - min-hold: TRIMs of PROFITABLE positions held fewer than
+          `position_management.min_hold_days` trading days are rejected
+          (loss-cutting and full exits always pass).
+
+        strategy_scan: optional context["strategy_scan"] dict with per-symbol
+        composite scores. Missing symbols are allowed (no data ≠ bearish).
 
         Returns (valid_actions, rejections).
         """
+        if isinstance(plan, list):  # executor-style list plans are valid too
+            plan = {"actions": plan}
         if not plan or plan.get("parse_error"):
             return [], ["Plan parse failed — no actions"]
 
@@ -734,6 +800,17 @@ class AITradingAgent:
         valid = []
         rejections = []
         rcfg = self.cfg["risk"]
+
+        # Composite scores from the multi-strategy alpha scan
+        composite = {}
+        for a in (strategy_scan or {}).get("assessments", []):
+            if not a.get("error") and a.get("symbol"):
+                composite[a["symbol"].upper()] = a.get("composite_score")
+        veto_threshold = self.cfg.get("strategy", {}).get("composite_veto", -0.15)
+
+        # Min-hold config
+        pmcfg = self.cfg.get("position_management", {})
+        min_hold_days = int(pmcfg.get("min_hold_days", 3) or 0)
 
         # Check kill-switch state
         try:
@@ -755,8 +832,10 @@ class AITradingAgent:
             logger.warning("Kill-switch check failed (allowing): %s", e)
 
         # Validate each action
-        positions = {p["symbol"] for p in (_safe_call(ac.get_positions) or [])}
-        buy_count = sum(1 for p in _safe_call(ac.get_positions) or [] if p["symbol"])
+        pos_rows = _safe_call(ac.get_positions) or []
+        positions = {p["symbol"] for p in pos_rows}
+        unrealized_plpc = {p["symbol"]: float(p.get("unrealized_plpc", 0)) * 100
+                           for p in pos_rows}
 
         for a in actions:
             act = a.get("action", "").upper()
@@ -767,6 +846,12 @@ class AITradingAgent:
                 continue
 
             if act == "BUY":
+                # Composite veto: alpha zoo bearish on this symbol
+                score = composite.get(sym)
+                if score is not None and score < veto_threshold:
+                    rejections.append(
+                        f"BUY {sym}: composite veto ({score:+.2f} < {veto_threshold:+.2f})")
+                    continue
                 # Max 3 new buys per cycle
                 new_buys = sum(1 for v in valid if v.get("action", "").upper() == "BUY" and v.get("symbol", "").upper() not in positions)
                 if new_buys >= 3:
@@ -781,6 +866,17 @@ class AITradingAgent:
                 if sym and sym not in positions:
                     rejections.append(f"{act} {sym}: not currently held")
                     continue
+                # Min-hold: block profit-taking trims of fresh positions.
+                # Losers (cut losses) and full exits (thesis decisions) pass.
+                if act == "TRIM" and min_hold_days > 0 and sym:
+                    entry_ts = _safe_call(tj_get_open_entry, sym)
+                    days_held = _trading_days_held(entry_ts) if entry_ts else None
+                    if days_held is not None and days_held < min_hold_days \
+                            and unrealized_plpc.get(sym, 0) >= 0:
+                        rejections.append(
+                            f"TRIM {sym}: min-hold ({days_held} trading days < "
+                            f"{min_hold_days}, position +{unrealized_plpc.get(sym, 0):.1f}%)")
+                        continue
                 valid.append(a)
 
             else:
@@ -788,12 +884,12 @@ class AITradingAgent:
 
         return valid, rejections
 
-    def execute(self, plan, dry_run=True):
+    def execute(self, plan, dry_run=True, strategy_scan=None):
         """Validate + execute the AI trade plan via risk-governed execution.
 
         Returns full results dict.
         """
-        valid_actions, rejections = self.validate_plan(plan)
+        valid_actions, rejections = self.validate_plan(plan, strategy_scan=strategy_scan)
 
         if not valid_actions:
             logger.info("No valid actions to execute. Rejections: %s", rejections)
@@ -839,7 +935,8 @@ class AITradingAgent:
         plan = decision["plan"]
 
         # 2. Execute
-        execution = self.execute(plan, dry_run=dry_run)
+        execution = self.execute(plan, dry_run=dry_run,
+                                 strategy_scan=decision["context"].get("strategy_scan"))
 
         # 3. Build report
         report = self._build_report(decision, execution)
@@ -975,13 +1072,13 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-    ap = argparse.ArgumentParser(description="AI Trading Agent (GLM 5.2)")
+    ap = argparse.ArgumentParser(description="AI Trading Agent (GLM-5.3-Flash)")
     ap.add_argument("--execute", action="store_true",
                     help="LIVE submit orders (default: dry run)")
     ap.add_argument("--decide-only", action="store_true",
                     help="Just show the AI decision without executing")
-    ap.add_argument("--model", default="glm-5.2",
-                    help="Model to use (default: glm-5.2)")
+    ap.add_argument("--model", default=GLM_MODEL,
+                    help=f"Model to use (default: {GLM_MODEL})")
     ap.add_argument("--temperature", type=float, default=0.3,
                     help="LLM temperature (default: 0.3)")
     args = ap.parse_args()

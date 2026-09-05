@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AI-enhanced trading cycle runner — uses GLM 5.2 for decision-making.
+# AI-enhanced trading cycle runner — uses GLM-5.3-Flash for decision-making.
 # Usage:
 #   ./run_ai_cycle.sh           # dry run (no orders)
 #   ./run_ai_cycle.sh --execute # live submit orders (risk-gated)
@@ -15,7 +15,7 @@ if [ -z "${GLM_API_KEY:-}" ] && [ -f ~/.hermes/.env ]; then
 fi
 
 echo "┌─ AI TRADING CYCLE ─ $(date -u '+%Y-%m-%d %H:%M UTC') ─ $(TZ='America/New_York' date '+%H:%M ET')"
-echo "│  Model: GLM 5.2 via Z.AI"
+echo "│  Model: GLM-5.3-Flash via Z.AI"
 python ai_agent.py "$@"
 EXIT=$?
 echo "└─ exit $EXIT"

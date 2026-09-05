@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS trades (
     pnl_dollars REAL,
     pnl_pct REAL,
     position_pct REAL,
-    risk_pct REAL,
+    risk_pct REAL,                -- percent of portfolio actually at risk (0.47 = 0.47%)
     thesis TEXT,
     outcome TEXT,                 -- open, win, loss, breakeven, stopped, target_hit
     strategy TEXT,                -- momentum, confluence, mean_reversion, breakout
@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS trades (
     tags TEXT,                    -- JSON array of custom tags
     status TEXT DEFAULT 'open',   -- open, closed
     broker_order_id TEXT,         -- Alpaca order id (dedupe key for reconciliation)
-    exit_ts TEXT                  -- fill time of the closing sell (for closed rows)
+    exit_ts TEXT,                 -- fill time of the closing sell (for closed rows)
+    exit_reason TEXT              -- stop | target | trim | ai_exit (best-effort classification)
 );
 
 CREATE TABLE IF NOT EXISTS lessons (
@@ -96,6 +97,8 @@ def init_db():
         conn.execute("ALTER TABLE trades ADD COLUMN broker_order_id TEXT")
     if "exit_ts" not in cols:
         conn.execute("ALTER TABLE trades ADD COLUMN exit_ts TEXT")
+    if "exit_reason" not in cols:
+        conn.execute("ALTER TABLE trades ADD COLUMN exit_reason TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_boid ON trades(broker_order_id)")
     conn.commit()
     conn.close()
@@ -105,7 +108,7 @@ def record_trade(symbol, side, qty=None, entry_price=None, exit_price=None,
                  stop_price=None, target_price=None, pnl_dollars=None, pnl_pct=None,
                  position_pct=None, risk_pct=None, thesis="", outcome="open",
                  strategy="", regime="", tags=None, status="open", broker_order_id=None,
-                 ts=None):
+                 ts=None, exit_reason=None):
     """Record a trade action. broker_order_id is the Alpaca order id — used as
     dedupe key by reconcile_journal() so backfills never double-count.
     ts overrides the row timestamp (e.g. the broker fill time on rebuild)."""
@@ -124,11 +127,13 @@ def record_trade(symbol, side, qty=None, entry_price=None, exit_price=None,
     conn.execute("""
         INSERT INTO trades (ts, symbol, side, qty, entry_price, exit_price,
             stop_price, target_price, pnl_dollars, pnl_pct, position_pct,
-            risk_pct, thesis, outcome, strategy, regime, tags, status, broker_order_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            risk_pct, thesis, outcome, strategy, regime, tags, status, broker_order_id,
+            exit_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (ts, symbol.upper(), side.upper(), qty, entry_price, exit_price,
           stop_price, target_price, pnl_dollars, pnl_pct, position_pct,
-          risk_pct, thesis, outcome, strategy, regime, tags_json, status, str(broker_order_id) if broker_order_id else None))
+          risk_pct, thesis, outcome, strategy, regime, tags_json, status, str(broker_order_id) if broker_order_id else None,
+          exit_reason))
     conn.execute("""
         INSERT INTO trades_fts (rowid, symbol, thesis, strategy, tags)
         VALUES (last_insert_rowid(), ?, ?, ?, ?)
@@ -138,7 +143,7 @@ def record_trade(symbol, side, qty=None, entry_price=None, exit_price=None,
     logger.info("Recorded trade: %s %s %s", side, symbol, qty)
 
 
-def close_trade(symbol, exit_price, pnl_dollars, pnl_pct, outcome="closed", thesis="", qty=None, exit_ts=None):
+def close_trade(symbol, exit_price, pnl_dollars, pnl_pct, outcome="closed", thesis="", qty=None, exit_ts=None, exit_reason=None):
     """Close a position (or part of it) FIFO across open lots.
 
     With qty=None this closes the entire open position for the symbol, consuming
@@ -148,7 +153,8 @@ def close_trade(symbol, exit_price, pnl_dollars, pnl_pct, outcome="closed", thes
 
     Realized P&L passed in by the caller is attributed pro-rata by shares;
     per-lot exit price is the fill price given. Rows become status='closed' with
-    outcome win/loss/breakeven derived from per-lot pnl.
+    outcome win/loss/breakeven derived from per-lot pnl. exit_reason (stop |
+    target | trim | ai_exit) is stamped on the closed rows when provided.
     """
     init_db()
     conn = _get_db()
@@ -189,23 +195,26 @@ def close_trade(symbol, exit_price, pnl_dollars, pnl_pct, outcome="closed", thes
             conn.execute("""
                 UPDATE trades SET exit_price=?, pnl_dollars=?, pnl_pct=?, outcome=?,
                     thesis=CASE WHEN thesis IS NULL OR thesis='' THEN ? ELSE thesis || ' | ' || ? END,
-                    status='closed', exit_ts=COALESCE(?, exit_ts)
+                    status='closed', exit_ts=COALESCE(?, exit_ts),
+                    exit_reason=COALESCE(?, exit_reason)
                 WHERE id=?
             """, (lot_exit, round(lot_pnl, 2), round(lot_pnl_pct, 4) if lot_pnl_pct is not None else None,
-                  lot_outcome, thesis, thesis, exit_ts, lot["id"]))
+                  lot_outcome, thesis, thesis, exit_ts, exit_reason, lot["id"]))
         else:
             # partial: close the consumed part, keep remainder as new open row
             conn.execute("UPDATE trades SET qty=? WHERE id=?", (lot_qty - take, lot["id"]))
             conn.execute("""
                 INSERT INTO trades (ts, symbol, side, qty, entry_price, exit_price,
                     stop_price, target_price, pnl_dollars, pnl_pct, position_pct,
-                    risk_pct, thesis, outcome, strategy, regime, tags, status, broker_order_id, exit_ts)
+                    risk_pct, thesis, outcome, strategy, regime, tags, status, broker_order_id, exit_ts,
+                    exit_reason)
                 SELECT ts, symbol, side, ?, entry_price, ?, stop_price, target_price, ?, ?,
-                    position_pct, risk_pct, thesis, ?, strategy, regime, tags, 'closed', broker_order_id, ?
+                    position_pct, risk_pct, thesis, ?, strategy, regime, tags, 'closed', broker_order_id, ?,
+                    ?
                 FROM trades WHERE id=?
             """, (take, lot_exit, round(lot_pnl, 2),
                   round(lot_pnl_pct, 4) if lot_pnl_pct is not None else None,
-                  lot_outcome, exit_ts, lot["id"]))
+                  lot_outcome, exit_ts, exit_reason, lot["id"]))
             conn.execute("""
                 INSERT INTO trades_fts (rowid, symbol, thesis, strategy, tags)
                 SELECT last_insert_rowid(), symbol, thesis, strategy, tags
@@ -312,6 +321,14 @@ def reconcile_journal(thesis_map=None):
             continue
         if str(o.get("side")).lower() == "buy":
             meta = pendings.pop(oid, None) or (thesis_map or {}).get(oid, {})
+            # Backfilled buys without AI context: stamp the last persisted
+            # regime so the journal's regime attribution isn't mostly blank.
+            if not meta.get("regime"):
+                try:
+                    import breadth as _breadth
+                    meta["regime"] = (_breadth.load_regime_now() or {}).get("regime", "")
+                except Exception:
+                    pass
             conn = _get_db()
             conn.execute("DELETE FROM pending_orders WHERE order_id=?", (oid,))
             conn.commit()
@@ -333,7 +350,7 @@ def reconcile_journal(thesis_map=None):
             # pnl per share = exit - entry(lot). Compute per lot inside close.
             conn = _get_db()
             lots = conn.execute(
-                "SELECT id, qty, entry_price FROM trades WHERE symbol=? AND status='open' ORDER BY id",
+                "SELECT id, qty, entry_price, stop_price, target_price FROM trades WHERE symbol=? AND status='open' ORDER BY id",
                 (sym,)).fetchall()
             conn.close()
             remaining = qty
@@ -351,12 +368,25 @@ def reconcile_journal(thesis_map=None):
             if remaining > 0.5:
                 # selling shares the journal has no lots for (shouldn't happen post-rebuild)
                 logger.warning("reconcile: %s sell %s shares unmatched (no open lots)", sym, remaining)
+            # Best-effort exit classification: bracket legs fill at their stop/
+            # target prices; AI-driven sells arrive with a TRIM/SELL thesis.
+            sell_meta = pendings.pop(oid, None) or {}
+            exit_reason = None
+            lot0 = lots[0] if lots else None
+            if lot0 is not None and lot0["stop_price"] and price <= float(lot0["stop_price"]) * 1.005:
+                exit_reason = "stop"
+            elif lot0 is not None and lot0["target_price"] and price >= float(lot0["target_price"]) * 0.995:
+                exit_reason = "target"
+            else:
+                th = (sell_meta.get("thesis") or "").upper()
+                exit_reason = "trim" if th.startswith("TRIM") else "ai_exit"
             close_trade(symbol=sym, exit_price=price, pnl_dollars=total_pnl,
                         pnl_pct=None, outcome="closed",
-                        thesis=(pendings.pop(oid, None) or {}).get(
+                        thesis=sell_meta.get(
                             "thesis", f"reconciled sell {qty} @ {price:.2f} (broker fill)"),
                         qty=qty,
-                        exit_ts=o.get("submitted_at") or o.get("created_at"))
+                        exit_ts=o.get("submitted_at") or o.get("created_at"),
+                        exit_reason=exit_reason)
             conn = _get_db()
             conn.execute("DELETE FROM pending_orders WHERE order_id=?", (oid,))
             conn.commit()
@@ -373,6 +403,18 @@ def reconcile_journal(thesis_map=None):
 
     return {"fills_scanned": len(fills), "buys_added": n_buys_added,
             "sells_applied": n_sells_applied}
+
+
+def get_open_entry_ts(symbol):
+    """Entry timestamp of the oldest open lot for a symbol (None if flat).
+    Used by the min-hold gate on AI trim decisions."""
+    init_db()
+    conn = _get_db()
+    row = conn.execute(
+        "SELECT MIN(ts) AS ts FROM trades WHERE symbol=? AND status='open'",
+        (symbol.upper(),)).fetchone()
+    conn.close()
+    return row["ts"] if row and row["ts"] else None
 
 
 def record_cycle(session="", regime="", equity=0, cash_pct=0, deployed_pct=0,
@@ -460,6 +502,20 @@ def get_stats():
     stats["by_symbol"] = [{
         "symbol": r["symbol"], "trades": r["total"],
         "wins": r["wins"], "win_rate": round(r["wins"] / r["total"] * 100, 1),
+        "total_pnl": round(r["total_pnl"] or 0, 2),
+    } for r in rows]
+
+    # By exit reason (tune exits from data: how much P&L comes from stops vs
+    # discretionary ai_exit vs trims)
+    rows = conn.execute("""
+        SELECT COALESCE(exit_reason, 'unclassified') as exit_reason,
+            COUNT(*) as total,
+            SUM(pnl_dollars) as total_pnl
+        FROM trades WHERE status='closed' AND pnl_dollars IS NOT NULL
+        GROUP BY exit_reason ORDER BY total_pnl DESC
+    """).fetchall()
+    stats["by_exit_reason"] = [{
+        "exit_reason": r["exit_reason"], "trades": r["total"],
         "total_pnl": round(r["total_pnl"] or 0, 2),
     } for r in rows]
 

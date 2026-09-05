@@ -146,7 +146,8 @@ def format_discord(data):
         lines.append(f"├─ STRATEGY [{confidence}]")
         lines.append(f"│  {summary_short}")
 
-    lines.append(f"└─ GLM 5.2 │ {len(briefings)} analysts")
+    model_label = (data.get("model") or "glm").replace("glm-", "GLM ").replace("-", " ").upper()
+    lines.append(f"└─ {model_label} │ {len(briefings)} analysts")
     lines.append("```")
 
     return "\n".join(lines)

@@ -159,6 +159,53 @@ def check_portfolio_risk(positions, portfolio_value, max_positions=None,
     }
 
 
+def sleeve_of(symbol, cfg):
+    """Return the universe group ('commodities', 'semis', …) a symbol belongs
+    to, or None if it's not in the configured universe."""
+    for group, syms in (cfg.get("strategy", {}).get("universe", {}) or {}).items():
+        if symbol in (syms or []):
+            return group
+    return None
+
+
+def check_sleeve_cap(symbol, order_value, cfg, positions, portfolio_value,
+                     pending_value=0.0):
+    """Cap exposure per universe group — correlated positions move together,
+    so GLD+SLV+GDX must share one budget, not three.
+
+    Args:
+        symbol: symbol being bought (its sleeve is looked up from cfg)
+        order_value: desired order cost in dollars
+        cfg: full config dict (uses risk.max_sleeve_exposure + strategy.universe)
+        positions: current broker positions (dicts with symbol/market_value)
+        portfolio_value: current portfolio value in dollars
+        pending_value: BUY cost already approved this cycle in the same sleeve
+
+    Returns:
+        (allowed_order_value, reason) — allowed_value of 0.0 means reject;
+        a reduced positive value means "size down to fit".
+        Symbols outside the universe (or cap <= 0) are uncapped.
+    """
+    cap = float(cfg.get("risk", {}).get("max_sleeve_exposure", 0.35) or 0)
+    sleeve = sleeve_of(symbol, cfg)
+    if not sleeve or cap <= 0 or portfolio_value <= 0:
+        return order_value, None
+
+    sleeve_syms = set(cfg["strategy"]["universe"].get(sleeve) or [])
+    held = sum(float(p["market_value"]) for p in positions
+               if p.get("symbol") in sleeve_syms)
+    limit = portfolio_value * cap
+    room = max(0.0, limit - held - pending_value)
+
+    if order_value <= room + 1e-9:
+        return order_value, None
+    if room <= 0:
+        return 0.0, (f"sleeve '{sleeve}' at cap: {held/portfolio_value*100:.1f}% held "
+                     f"(cap {cap*100:.0f}%)")
+    return room, (f"sleeve '{sleeve}' cap: sized down to fit "
+                  f"({held/portfolio_value*100:.1f}% held, cap {cap*100:.0f}%)")
+
+
 def assess_trade(symbol, entry_price, stop_loss_price, portfolio_value, current_positions=None):
     """
     Full trade risk assessment. Combines position sizing and portfolio checks.

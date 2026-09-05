@@ -1,30 +1,32 @@
-import pandas as pd, pathlib
-D = pathlib.Path('data')
-sectors = {'XLK':'Tech','XLY':'Discr','XLP':'Staples','XLE':'Energy','XLF':'Fin','XLV':'Health','XLI':'Indust','XLB':'Mat','XLU':'Util','XLRE':'REIT','XLC':'Comm'}
-above=below=[]
-res=[]
-for t,n in sectors.items():
-    f=D/f'{t}.csv'
-    if not f.exists(): continue
-    df=pd.read_csv(f)
-    for c in ['Close','close','Adj Close']:
-        if c in df.columns: px=df[c]; break
-    last=float(px.iloc[-1]); sma20=float(px.iloc[-20:].mean())
-    vs=(last/sma20-1)*100
-    res.append((n,last,vs,'ABOVE' if vs>=0 else 'BELOW'))
-a=sum(1 for r in res if r[3]=='ABOVE'); b=sum(1 for r in res if r[3]=='BELOW')
-print("=== S&P SECTOR BREADTH vs 20-SMA ===")
-for n,last,vs,st in sorted(res,key=lambda x:x[2]):
-    print(f"{n:<8}{last:>8.2f}{vs:>8.2f}%  {st}")
-print(f"\nABOVE 20-SMA: {a}  |  BELOW: {b}  |  net breadth: {a-b:+d}  (broad: >+5, narrow risk-off: <0)")
-# leadership check
-print("\n=== MARKET LEADERSHIP vs 20-SMA ===")
-for t in ['SMH','SOXX','NVDA','AVGO','MU','MSFT','META','AMZN','TSLA','XBI']:
-    f=D/f'{t}.csv'
-    if not f.exists(): continue
-    df=pd.read_csv(f)
-    for c in ['Close','close','Adj Close']:
-        if c in df.columns: px=df[c]; break
-    last=float(px.iloc[-1]); sma20=float(px.iloc[-20:].mean())
-    vs=(last/sma20-1)*100
-    print(f"{t:<6}{last:>9.2f}{vs:>8.2f}%  {'ABOVE' if vs>=0 else 'BELOW'}")
+"""Sector breadth — thin CLI wrapper over the root breadth module.
+
+Refreshes prices via the broker/LSE feed (alpaca_client bars, CSV-cached)
+instead of reading stale local CSVs, and prints the same table format the
+premarket report expects. Includes leadership names alongside sectors.
+"""
+import os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import breadth
+
+
+def main():
+    b = breadth.compute_breadth()
+    print("=== S&P SECTOR BREADTH vs 20-SMA ===")
+    for d in sorted(b["details"], key=lambda x: -x["pct_vs_sma"]):
+        print(f"{d['name']:<8}{d['close']:>9.2f}{d['pct_vs_sma']:>+8.2f}%  "
+              f"{'ABOVE' if d['above'] else 'BELOW'}")
+    print(f"\nABOVE 20-SMA: {b['above']}  |  BELOW: {b['below']}  |  "
+          f"net breadth: {b['net']:+d}  (broad: >+5, narrow risk-off: <0)")
+
+    print("\n=== MARKET LEADERSHIP vs 20-SMA ===")
+    leaders = breadth.compute_breadth(
+        symbols=["SMH", "SOXX", "NVDA", "AVGO", "MU", "MSFT", "META", "AMZN", "TSLA", "XBI"])
+    for d in sorted(leaders["details"], key=lambda x: -x["pct_vs_sma"]):
+        print(f"{d['symbol']:<6}{d['close']:>9.2f}{d['pct_vs_sma']:>+8.2f}%  "
+              f"{'ABOVE' if d['above'] else 'BELOW'}")
+
+
+if __name__ == "__main__":
+    main()
