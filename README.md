@@ -365,3 +365,10 @@ your own risk.
 ## 📄 License
 
 [MIT](LICENSE) © Nathan Pua
+
+## Local Dev Workflow (Mac → GitHub → VPS)
+
+1. Develop on the Mac in `~/trading-bot` (venv: `source .venv/bin/activate`, Python 3.11 via uv).
+2. Commit and push to `main` — same repo, `git push origin main`.
+3. The VPS watcher (`~/.hermes/scripts/trading_pull_watcher.sh`, every 5 min) fast-forwards the live copy, runs a health check (module imports + config parse), restarts the dashboard when bot code/config changed, and posts the new commits to Discord.
+4. Secrets live only in `.env` per machine (gitignored): Alpaca, LSE, GLM keys. Never commit them.
