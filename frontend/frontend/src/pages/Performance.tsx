@@ -27,6 +27,7 @@ interface MonthlyData {
 
 interface CumPoint { ts: string; cumulative_pnl: number; symbol: string; pnl: number; }
 interface EquityPoint { ts: string; equity: number; }
+interface EquityEvent { ts: string; label: string; detail: string; }
 interface StrategyStat { strategy: string; trades: number; wins: number; win_rate: number; total_pnl: number; }
 interface SymbolStat { symbol: string; trades: number; wins: number; win_rate: number; total_pnl: number; }
 
@@ -39,6 +40,7 @@ interface PerfData {
   monthly?: MonthlyData[];
   cumulative_pnl?: CumPoint[];
   equity_curve?: EquityPoint[];
+  equity_events?: EquityEvent[];
   closed_trade_count?: number;
   total_trade_count?: number;
   error?: string;
@@ -156,10 +158,24 @@ export function Performance() {
                 <YAxis tick={{ fill: "#5c6677", fontSize: 11 }} axisLine={{ stroke: "#232b38" }}
                   domain={["auto", "auto"]} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
                 <Tooltip contentStyle={{ background: "#0f1419", border: "1px solid #232b38", borderRadius: 6, color: "#e6edf3" }} />
+                {(data.equity_events || [])
+                  .filter(ev => equityData.some(d => d.ts === ev.ts.slice(5)))
+                  .map((ev, i) => (
+                    <ReferenceLine key={ev.ts + i} x={ev.ts.slice(5)} stroke="#f5a623"
+                      strokeDasharray="4 3"
+                      label={{ value: ev.label, position: "insideTopLeft",
+                        fill: "#f5a623", fontSize: 10, offset: i % 2 === 0 ? 0 : 14 }} />
+                  ))}
                 <Area type="monotone" dataKey="equity" stroke="#38bdf8" strokeWidth={2} fill="url(#eqGrad)" />
               </AreaChart>
             </ResponsiveContainer>
           </div>
+          {(data.equity_events || []).length > 0 && (
+            <div className="metric-sub" style={{ marginTop: 6 }}>
+              ⚠ Amber markers = corporate-action events (not trading performance):{" "}
+              {(data.equity_events || []).map(e => `${e.ts.slice(5)} ${e.label}`).join(" · ")}
+            </div>
+          )}
         </div>
       )}
 

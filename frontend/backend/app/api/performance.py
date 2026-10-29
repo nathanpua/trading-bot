@@ -20,6 +20,27 @@ logger = logging.getLogger("dashboard")
 # cumulative/monthly P&L, but never in win rate / streaks / largest-win-loss.
 RESTATEMENT_STRATEGY = "corporate_action_restatement"
 
+# Annotated equity-curve events — corporate-action plumbing that explains
+# otherwise-mysterious overnight equity steps. Sources: the 2026-10-30 broker
+# activity-log audit, plus journal restatement rows (queried per request, so
+# new restatements annotate themselves).
+EQUITY_EVENTS = [
+    {
+        "ts": "2026-10-07",
+        "label": "ETHA mark-up +$20K",
+        "detail": "Paper account priced the 491sh ETHA position late — the unrealized "
+                  "gain from the Sep $20.12 entries lands in equity overnight. The flat "
+                  "$100K stretch before this is the artifact, not the jump.",
+    },
+    {
+        "ts": "2026-10-27",
+        "label": "ETHA split + resolution −$17K",
+        "detail": "1:3 reverse split flipped the leftover short to long (paper-account "
+                  "quirk) and Alpaca silently removed the final position with no sell "
+                  "order. Journal restated −$17,217.73 on 2026-10-26.",
+    },
+]
+
 
 @router.get("")
 def get_performance():
@@ -93,6 +114,22 @@ def get_performance():
         # Monthly breakdown
         monthly = _monthly_breakdown(closed)
 
+        # Equity-curve annotations: curated corporate-action events + material
+        # journal restatements (self-annotating as new ones are posted)
+        events = list(EQUITY_EVENTS)
+        try:
+            for r in journal_service.get_trades(limit=500, strategy=RESTATEMENT_STRATEGY):
+                if abs(r.get("pnl_dollars") or 0) >= 1000:
+                    events.append({
+                        "ts": (r.get("exit_ts") or r.get("ts") or "")[:10],
+                        "label": f"Restatement {r.get('symbol')}: {r['pnl_dollars']:+,.0f}",
+                        "detail": (r.get("thesis") or "")[:200],
+                    })
+        except Exception as e:
+            logger.debug("restatement events unavailable: %s", e)
+        events = sorted(
+            (e for e in events if e.get("ts")), key=lambda e: e["ts"])
+
         # Cumulative P&L over time (realized only — knows nothing about open)
         cumulative = _cumulative_pnl(closed)
 
@@ -107,6 +144,7 @@ def get_performance():
             "monthly": monthly,
             "cumulative_pnl": cumulative,
             "equity_curve": _dedupe_curve(equity_curve),
+            "equity_events": events,
             "closed_trade_count": len(closed),
             "total_trade_count": len(trades),
         }
