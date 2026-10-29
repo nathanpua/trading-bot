@@ -146,6 +146,15 @@ def format_discord(data):
         lines.append(f"├─ STRATEGY [{confidence}]")
         lines.append(f"│  {summary_short}")
 
+    # ── Reconciliation findings (journal vs broker position-truth) ──
+    rec = data.get("reconciliation") or {}
+    rec_items = rec.get("rebased", []) + rec.get("closed", []) + rec.get("backfilled", [])
+    rec_alerts = rec.get("alerts", [])
+    if rec_items or rec_alerts:
+        lines.append(f"├─ ⚠ RECONCILED ({len(rec_items)} fixes, {len(rec_alerts)} alerts)")
+        for item in (rec_items + rec_alerts)[:4]:
+            lines.append(f"│  • {item[:90]}")
+
     model_label = (data.get("model") or "glm").replace("glm-", "GLM ").replace("-", " ").upper()
     lines.append(f"└─ {model_label} │ {len(briefings)} analysts")
     lines.append("```")

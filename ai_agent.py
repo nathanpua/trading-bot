@@ -504,15 +504,25 @@ def _recall_memory(held_symbols):
 
 
 def _get_journal_stats():
-    """Get journal performance stats."""
+    """Get journal performance stats + broker-truth equity performance.
+
+    broker_truth is computed from the per-cycle broker equity series — it is
+    the AUTHORITATIVE record (journal trade P&L drifts through corporate
+    actions / mark-priced reconciliations). Consumers should quote it first.
+    """
     try:
         import trade_journal as tj
         stats = tj.get_stats()
-        return {
+        out = {
             "overall": stats.get("overall"),
             "by_strategy": stats.get("by_strategy", []),
             "recent_lessons": stats.get("recent_lessons", [])[:5],
         }
+        try:
+            out["broker_truth"] = tj.get_broker_performance()
+        except Exception:
+            pass
+        return out
     except Exception:
         return {}
 

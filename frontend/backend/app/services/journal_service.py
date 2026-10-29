@@ -88,32 +88,42 @@ def get_trades(limit=50, symbol=None, strategy=None, status=None, outcome=None):
     return [dict(r) for r in rows]
 
 
+RESTATEMENT_STRATEGY = "corporate_action_restatement"
+
+
 def get_stats():
     conn = _get_db()
     if not conn:
         return {"overall": None, "by_strategy": [], "by_symbol": [], "recent_lessons": []}
     stats = {}
-    row = conn.execute("""
+    no_restate = f"strategy != '{RESTATEMENT_STRATEGY}'"
+    row = conn.execute(f"""
         SELECT COUNT(*) as total,
             SUM(CASE WHEN pnl_dollars > 0 THEN 1 ELSE 0 END) as wins,
             SUM(CASE WHEN pnl_dollars < 0 THEN 1 ELSE 0 END) as losses,
             SUM(pnl_dollars) as total_pnl, AVG(pnl_pct) as avg_pnl_pct
-        FROM trades WHERE status='closed' AND pnl_dollars IS NOT NULL
+        FROM trades WHERE status='closed' AND pnl_dollars IS NOT NULL AND {no_restate}
     """).fetchone()
     if row and row["total"]:
+        # total includes restatements so it ties to broker equity
+        all_pnl = conn.execute(
+            "SELECT SUM(pnl_dollars) as p FROM trades WHERE status='closed' "
+            "AND pnl_dollars IS NOT NULL").fetchone()
         stats["overall"] = {
             "trades": row["total"], "wins": row["wins"], "losses": row["losses"],
             "win_rate": round(row["wins"] / row["total"] * 100, 1),
-            "total_pnl": round(row["total_pnl"] or 0, 2),
+            "total_pnl": round(all_pnl["p"] or 0, 2),
+            "trades_pnl": round(row["total_pnl"] or 0, 2),
             "avg_pnl_pct": round(row["avg_pnl_pct"] or 0, 2),
         }
     else:
         stats["overall"] = None
-    rows = conn.execute("""
+    rows = conn.execute(f"""
         SELECT strategy, COUNT(*) as total,
             SUM(CASE WHEN pnl_dollars > 0 THEN 1 ELSE 0 END) as wins,
             SUM(pnl_dollars) as total_pnl
         FROM trades WHERE status='closed' AND pnl_dollars IS NOT NULL AND strategy != ''
+            AND {no_restate}
         GROUP BY strategy
     """).fetchall()
     stats["by_strategy"] = [{
@@ -123,14 +133,16 @@ def get_stats():
     } for r in rows]
     rows = conn.execute("""
         SELECT symbol, COUNT(*) as total,
-            SUM(CASE WHEN pnl_dollars > 0 THEN 1 ELSE 0 END) as wins,
-            SUM(pnl_dollars) as total_pnl
+            SUM(CASE WHEN pnl_dollars > 0 AND strategy != ? THEN 1 ELSE 0 END) as wins,
+            SUM(pnl_dollars) as total_pnl,
+            SUM(CASE WHEN strategy != ? THEN 1 ELSE 0 END) as trade_count
         FROM trades WHERE status='closed' AND pnl_dollars IS NOT NULL
         GROUP BY symbol ORDER BY total_pnl DESC
-    """).fetchall()
+    """, (RESTATEMENT_STRATEGY, RESTATEMENT_STRATEGY)).fetchall()
     stats["by_symbol"] = [{
-        "symbol": r["symbol"], "trades": r["total"],
-        "wins": r["wins"], "win_rate": round(r["wins"] / r["total"] * 100, 1),
+        "symbol": r["symbol"], "trades": r["trade_count"],
+        "wins": r["wins"],
+        "win_rate": round(r["wins"] / r["trade_count"] * 100, 1) if r["trade_count"] else 0,
         "total_pnl": round(r["total_pnl"] or 0, 2),
     } for r in rows]
     rows = conn.execute(

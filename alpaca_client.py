@@ -300,15 +300,26 @@ def _fetch_alpaca_snapshot_bars(symbol):
     return None
 
 
-def place_market_order(symbol, qty, side="buy"):
+def place_market_order(symbol, qty, side="buy", allow_naked_buy=False):
     """
     Place a market order.
-    
+
     Args:
         symbol: ticker symbol (e.g. 'AAPL')
         qty: number of shares (int or float for fractional)
         side: 'buy' or 'sell'
+        allow_naked_buy: escape hatch for naked BUYs. BUY market orders are
+            refused by default — every entry must go through the bracket
+            path (see scripts/trading_floor_execute.py / autonomous_engine.py)
+            so a fill can never exist without its stop-loss and target.
+            A naked fractional ETHA buy slipped through an ad-hoc order on
+            2026-10-27 and sat undetected until reconciliation flagged it.
     """
+    if side.lower() == "buy" and not allow_naked_buy:
+        raise ValueError(
+            "refusing naked market BUY: submit a bracket order "
+            "(MarketOrderRequest + StopLossRequest + TakeProfitRequest) "
+            "or pass allow_naked_buy=True to override")
     client = get_trading_client()
     order = MarketOrderRequest(
         symbol=symbol.upper(),
@@ -397,6 +408,49 @@ def get_orders(status="open", limit=50):
             "filled_qty": str(o.filled_qty) if o.filled_qty else None,
         })
     return result
+
+
+def get_activities(activity_types=None, date=None, after=None, until=None, limit=100):
+    """Get account activities (fills, transfers, positions-resolved events).
+
+    Activity types include FILL, TRANSFER, CSD (cash disbursement),
+    positions_resolved — events that change the account WITHOUT necessarily
+    leaving an order in get_orders() (e.g. auto-liquidations, account resets,
+    manual cash movements). This is the forensic complement to get_orders().
+    Raw REST: the installed alpaca-py has no get_activities wrapper.
+    """
+    import requests
+    client = get_trading_client()
+    base = client._base_url.rstrip("/")
+    hdrs = client._get_auth_headers()
+    params = {"limit": limit}
+    if date:
+        params["date"] = date
+    if after:
+        params["after"] = after
+    if until:
+        params["until"] = until
+    # requests needs repeated pairs (not comma-joined) for multi-value params
+    pairs = list(params.items())
+    if activity_types:
+        pairs += [("activity_types", t) for t in activity_types]
+    resp = requests.get(f"{base}/v2/account/activities", params=pairs,
+                        headers=hdrs, timeout=30)
+    resp.raise_for_status()
+    out = []
+    for d in resp.json():
+        out.append({
+            "id": str(d.get("id", "")),
+            "type": str(d.get("activity_type", "")),
+            "date": str(d.get("date", "")),
+            "symbol": d.get("symbol"),
+            "side": str(d.get("side", "") or ""),
+            "qty": float(d.get("qty") or 0),
+            "price": float(d.get("price") or 0),
+            "net_amount": float(d.get("net_amount") or 0),
+            "description": str(d.get("description", "") or "")[:120],
+        })
+    return out
 
 
 def is_market_open():

@@ -66,7 +66,7 @@ positions with trailing stops — running unattended on a schedule.
 | [`finnhub_client.py`](finnhub_client.py) | Primary market-data feed: real-time quotes, OHLCV candles, market news, and company news. Rate-limited to respect the free tier. |
 | [`indicators.py`](indicators.py) | Computes the full indicator suite and a 0–5 confluence *buy/sell score* (RSI + MACD + SMA cross + Bollinger + Stochastic). |
 | [`risk_manager.py`](risk_manager.py) | Position sizing (`shares = portfolio × risk% / stop_distance`), ATR-based stop/take-profit, and portfolio exposure checks. |
-| [`trade_journal.py`](trade_journal.py) | SQLite store of every trade, lesson, and cycle — queryable by strategy/symbol with full-text search. |
+| [`trade_journal.py`](trade_journal.py) | SQLite store of every trade, lesson, and cycle — queryable by strategy/symbol with full-text search. `reconcile_journal()` projects broker *fills* into the journal; `reconcile_positions()` (position-truth gate, runs every cycle after it) diffs broker *positions* against open lots — closes phantom lots, rebases split quantities (a 1:3 reverse split broke ETHA accounting in Oct 2026), backfills uncovered shares, and flags naked fills without stop-losses. `get_broker_performance()` computes audit-grade performance from the per-cycle broker equity series (see `scripts/performance_broker.py`). History is corrected via clearly-labeled restatement rows (`strategy=corporate_action_restatement`, see `record_restatement()`): they count in **total P&L** so it ties to broker equity, but are excluded from trade counts/win rates — accounting corrections, not trades. |
 | [`trade_memory.py`](trade_memory.py) | Optional semantic memory via Supermemory; recalls analyst findings and lessons at the start of each cycle. |
 | [`backtest.py`](backtest.py) / [`backtest_analysis.py`](backtest_analysis.py) | Backtrader backtests. `backtest_analysis.py` is a corrected harness that fixes two upstream bugs (see its header docstring). |
 | [`config.yaml`](config.yaml) | **All tunables** — risk limits, strategy thresholds, the trade universe, regime thresholds. No code changes needed to tune. |
@@ -85,6 +85,7 @@ positions with trailing stops — running unattended on a schedule.
 | `trading_floor_state.py` | Dumps complete portfolio + technicals + regime as JSON. |
 | `trading_floor_context.py` | Combines state + memory recall + journal stats into one context block. |
 | `trading_floor_execute.py` | **Governed executor**: takes a JSON trade plan, risk-gates each action, submits bracket orders. |
+| `performance_broker.py` | Broker-truth performance audit (equity-curve return, drawdown, Sharpe/Sortino, journal-vs-broker drift). |
 | `execute_trade_plan.py` | Standalone bracket-order builder/submitter for a symbol list. |
 | `seed_memory.py` | Seeds Supermemory with sample analyst findings. |
 

@@ -405,6 +405,176 @@ def reconcile_journal(thesis_map=None):
             "sells_applied": n_sells_applied}
 
 
+def reconcile_positions(dry_run=False, eps=0.05):
+    """Position-truth gate: make journal open lots agree with broker POSITIONS.
+
+    reconcile_journal() projects broker FILLS into the journal, but corporate
+    actions (reverse splits), oversells into short renders, and silent paper-
+    account position resolutions leave NO order behind — a fills-only pass
+    cannot see them. (Live case: ETHA 1:3 reverse split 2026-10-26 flipped a
+    short -491 into +163.67 long; the position later vanished with no sell
+    order at all, leaving a phantom 327.33-share "open" journal lot.)
+
+    Per symbol, comparing journal open qty vs broker held qty:
+      - exact split-multiple mismatch (2/3/4/5/10 x) -> rebase journal qty
+        and cost basis (and stop/target levels) by the split ratio
+      - journal holds shares the broker doesn't  -> FIFO-close the excess at
+        the best available mark, exit_reason='reconciled' (mark-priced, NOT
+        a fill — approximate P&L, visible in the by_exit_reason breakdown)
+      - broker holds shares with no journal lot  -> backfill a lot at the
+        broker's average entry price
+      - any open lot without a stop price        -> unbounded-risk alert
+        (fills that bypassed the governed bracket path)
+
+    Idempotent; meant to run every cycle after reconcile_journal(). Returns
+    a report dict: {symbols_checked, rebased, closed, backfilled, alerts}.
+    """
+    import alpaca_client as ac
+
+    init_db()
+    try:
+        positions = {p["symbol"].upper(): p for p in ac.get_positions()}
+    except Exception as e:
+        logger.warning("reconcile_positions: broker positions unavailable: %s", e)
+        return {"symbols_checked": 0, "rebased": [], "closed": [], "backfilled": [],
+                "alerts": ["broker positions unavailable: " + str(e)[:80]]}
+
+    conn = _get_db()
+    journal = {}
+    for r in conn.execute(
+            "SELECT symbol, SUM(qty) AS qty FROM trades WHERE status='open' GROUP BY symbol"):
+        journal[r["symbol"].upper()] = float(r["qty"] or 0)
+    conn.close()
+
+    report = {"symbols_checked": len(set(journal) | set(positions)),
+              "rebased": [], "closed": [], "backfilled": [], "alerts": []}
+
+    def _mark_price(sym):
+        """Best available price when the broker no longer quotes the position."""
+        pos = positions.get(sym)
+        if pos and float(pos.get("current_price") or 0) > 0:
+            return float(pos["current_price"])
+        try:
+            df = ac.get_bars(sym, "1Day", 5)
+            if df is not None and not df.empty:
+                return float(df.iloc[-1]["close"])
+        except Exception:
+            pass
+        return None
+
+    for sym in set(journal) | set(positions):
+        jq = journal.get(sym, 0.0)
+        pos = positions.get(sym)
+        bq = float(pos["qty"]) if pos else 0.0
+
+        if abs(jq - bq) <= eps:
+            continue
+
+        # Split-multiple detection: quantities off by an exact common ratio
+        # are a corporate action, not drift — rebase instead of closing.
+        split_ratio = None
+        if jq > 0 and bq > 0:
+            for r in (2, 3, 4, 5, 10):
+                if abs(jq * r - bq) <= eps:      # forward split 1:r
+                    split_ratio = 1.0 / r
+                    break
+                if abs(bq * r - jq) <= eps:      # reverse split r:1
+                    split_ratio = float(r)
+                    break
+
+        if split_ratio is not None:
+            # journal shares become broker shares: qty * (1/ratio), basis * ratio
+            factor = 1.0 / split_ratio
+            if not dry_run:
+                conn = _get_db()
+                conn.execute("""UPDATE trades SET qty = qty * ?,
+                                entry_price = entry_price * ?,
+                                stop_price = CASE WHEN stop_price IS NULL THEN NULL
+                                             ELSE stop_price * ? END,
+                                target_price = CASE WHEN target_price IS NULL THEN NULL
+                                                ELSE target_price * ? END,
+                                thesis = thesis || ' | split-adjusted ' || ?
+                                WHERE symbol = ? AND status = 'open'""",
+                             (factor, split_ratio, split_ratio, split_ratio,
+                              f"x{split_ratio:g}", sym))
+                conn.commit()
+                conn.close()
+            report["rebased"].append(
+                f"{sym}: split-adjust x{split_ratio:g} (journal {jq:.4g} -> {bq:.4g} shares, cost basis rebased)")
+            journal[sym] = bq
+            continue
+
+        if jq > bq:
+            # Journal believes in shares the broker doesn't hold: FIFO-close
+            # the excess at the best mark. Mark-priced, clearly stamped.
+            excess = jq - bq
+            mark = _mark_price(sym)
+            if mark is None:
+                report["alerts"].append(
+                    f"{sym}: {excess:.4g} phantom shares but no price available — left open, MANUAL REVIEW")
+                continue
+            if not dry_run:
+                conn = _get_db()
+                lots = conn.execute(
+                    "SELECT id, entry_price FROM trades WHERE symbol=? AND status='open' ORDER BY id",
+                    (sym,)).fetchall()
+                conn.close()
+                remaining_shares = excess
+                total_pnl = 0.0
+                for lot in lots:
+                    if remaining_shares <= 0:
+                        break
+                    conn = _get_db()
+                    lot_qty = _qty_of(lot["id"])
+                    conn.close()
+                    take = min(remaining_shares, lot_qty)
+                    total_pnl += (mark - float(lot["entry_price"] or 0)) * take
+                    remaining_shares -= take
+                close_trade(symbol=sym, exit_price=mark,
+                            pnl_dollars=total_pnl, pnl_pct=None, outcome="closed",
+                            thesis=f"reconciled: broker no longer holds {excess:.4g} shares "
+                                   f"(corporate action / silent resolution); mark-priced @ {mark:.2f}, "
+                                   f"P&L approximate — NOT a fill",
+                            qty=excess, exit_reason="reconciled")
+            report["closed"].append(
+                f"{sym}: closed {excess:.4g} phantom shares at mark {mark:.2f} (no broker position)")
+        else:
+            # Broker holds shares the journal has no lot for (fill missed or
+            # predates the journal): backfill at the broker's average entry.
+            missing = bq - jq
+            avg = float(pos.get("avg_entry_price") or 0) if pos else 0
+            if avg <= 0:
+                report["alerts"].append(
+                    f"{sym}: broker holds {missing:.4g} uncovered shares with unknown cost basis — MANUAL REVIEW")
+                continue
+            if not dry_run:
+                record_trade(symbol=sym, side="BUY", qty=missing, entry_price=avg,
+                             thesis="backfilled from broker position (fill missing from journal)",
+                             strategy="reconciled", status="open")
+            report["backfilled"].append(
+                f"{sym}: backfilled {missing:.4g} shares at avg entry {avg:.2f}")
+
+    # Unbounded-risk audit: open lots whose fills bypassed the bracket path
+    conn = _get_db()
+    for r in conn.execute("""SELECT symbol, SUM(qty) AS qty FROM trades
+                             WHERE status='open' AND (stop_price IS NULL OR stop_price = 0)
+                             GROUP BY symbol"""):
+        report["alerts"].append(
+            f"{r['symbol']}: {float(r['qty'] or 0):.4g} open shares WITHOUT stop-loss "
+            f"(fill bypassed governed bracket path)")
+    conn.close()
+
+    return report
+
+
+def _qty_of(trade_id):
+    """qty of a journal row (helper for reconcile_positions)."""
+    conn = _get_db()
+    row = conn.execute("SELECT qty FROM trades WHERE id=?", (trade_id,)).fetchone()
+    conn.close()
+    return float(row["qty"] or 0) if row else 0.0
+
+
 def get_open_entry_ts(symbol):
     """Entry timestamp of the oldest open lot for a symbol (None if flat).
     Used by the min-hold gate on AI trim decisions."""
@@ -452,36 +622,99 @@ def add_lesson(category, lesson, evidence="", confidence="medium"):
     logger.info("Recorded lesson: [%s] %s", category, lesson[:60])
 
 
+RESTATEMENT_STRATEGY = "corporate_action_restatement"
+
+
+def record_restatement(symbol, pnl_dollars, thesis, ts=None):
+    """Post a clearly-labeled restatement entry that corrects journal history
+    to broker truth without touching the original fill rows.
+
+    Used when events the fills-feed can't see (reverse splits, short
+    resolutions, silent paper-account position removals) make the journal's
+    cumulative P&L wrong. Rows carry strategy=corporate_action_restatement:
+    they count in TOTAL P&L (so totals match broker equity) but are excluded
+    from trade counts / win rates (they are not trade decisions).
+    Idempotence is the caller's job — check for existing restatement rows
+    for the symbol first.
+    """
+    init_db()
+    conn = _get_db()
+    ts = ts or datetime.now(timezone.utc).isoformat()
+    conn.execute("""
+        INSERT INTO trades (ts, symbol, side, qty, entry_price, exit_price,
+            stop_price, target_price, pnl_dollars, pnl_pct, position_pct,
+            risk_pct, thesis, outcome, strategy, regime, tags, status, exit_reason)
+        VALUES (?, ?, 'ADJUST', 0, NULL, NULL, NULL, NULL, ?, NULL, NULL, NULL,
+                ?, 'adjustment', ?, '', '[]', 'closed', 'reconciled')
+    """, (ts, symbol.upper(), round(pnl_dollars, 2), thesis, RESTATEMENT_STRATEGY))
+    rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute("""
+        INSERT INTO trades_fts (rowid, symbol, thesis, strategy, tags)
+        VALUES (?, ?, ?, ?, '[]')
+    """, (rid, symbol.upper(), thesis, RESTATEMENT_STRATEGY))
+    conn.commit()
+    conn.close()
+    logger.info("Recorded restatement: %s %+.2f", symbol, pnl_dollars)
+
+
+def has_restatement(symbol=None):
+    """True if restatement rows exist (all, or for one symbol)."""
+    init_db()
+    conn = _get_db()
+    if symbol:
+        row = conn.execute(
+            "SELECT 1 FROM trades WHERE strategy=? AND symbol=? LIMIT 1",
+            (RESTATEMENT_STRATEGY, symbol.upper())).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT 1 FROM trades WHERE strategy=? LIMIT 1",
+            (RESTATEMENT_STRATEGY,)).fetchone()
+    conn.close()
+    return row is not None
+
+
 def get_stats():
-    """Aggregate performance stats."""
+    """Aggregate performance stats.
+
+    Restatement rows (corporate actions / broker-truth corrections) are
+    included in total P&L so it ties to broker equity, but excluded from
+    trade counts and win rates — they are accounting corrections, not trades.
+    """
     init_db()
     conn = _get_db()
     stats = {}
+    no_restate = f"strategy != '{RESTATEMENT_STRATEGY}'"
 
     # Overall
-    row = conn.execute("""
+    row = conn.execute(f"""
         SELECT COUNT(*) as total,
             SUM(CASE WHEN pnl_dollars > 0 THEN 1 ELSE 0 END) as wins,
             SUM(CASE WHEN pnl_dollars < 0 THEN 1 ELSE 0 END) as losses,
             SUM(pnl_dollars) as total_pnl,
             AVG(pnl_pct) as avg_pnl_pct
-        FROM trades WHERE status='closed' AND pnl_dollars IS NOT NULL
+        FROM trades WHERE status='closed' AND pnl_dollars IS NOT NULL AND {no_restate}
     """).fetchone()
     if row and row["total"]:
+        # total includes restatements so it ties to broker equity
+        conn2_total = conn.execute(
+            "SELECT SUM(pnl_dollars) as p FROM trades WHERE status='closed' "
+            "AND pnl_dollars IS NOT NULL").fetchone()
         stats["overall"] = {
             "trades": row["total"], "wins": row["wins"], "losses": row["losses"],
             "win_rate": round(row["wins"] / row["total"] * 100, 1) if row["total"] else 0,
-            "total_pnl": round(row["total_pnl"] or 0, 2),
+            "total_pnl": round(conn2_total["p"] or 0, 2),
+            "trades_pnl": round(row["total_pnl"] or 0, 2),
             "avg_pnl_pct": round(row["avg_pnl_pct"] or 0, 2),
         }
 
     # By strategy
-    rows = conn.execute("""
+    rows = conn.execute(f"""
         SELECT strategy,
             COUNT(*) as total,
             SUM(CASE WHEN pnl_dollars > 0 THEN 1 ELSE 0 END) as wins,
             SUM(pnl_dollars) as total_pnl
         FROM trades WHERE status='closed' AND pnl_dollars IS NOT NULL AND strategy != ''
+            AND {no_restate}
         GROUP BY strategy
     """).fetchall()
     stats["by_strategy"] = [{
@@ -490,19 +723,23 @@ def get_stats():
         "total_pnl": round(r["total_pnl"] or 0, 2),
     } for r in rows]
 
-    # By symbol
+    # By symbol (restatements included — a symbol's true P&L includes its
+    # corporate-action corrections — but flagged so consumers can separate)
     rows = conn.execute("""
         SELECT symbol,
             COUNT(*) as total,
-            SUM(CASE WHEN pnl_dollars > 0 THEN 1 ELSE 0 END) as wins,
-            SUM(pnl_dollars) as total_pnl
+            SUM(CASE WHEN pnl_dollars > 0 AND strategy != ? THEN 1 ELSE 0 END) as wins,
+            SUM(pnl_dollars) as total_pnl,
+            SUM(CASE WHEN strategy = ? THEN pnl_dollars ELSE 0 END) as restatement_pnl,
+            SUM(CASE WHEN strategy != ? THEN 1 ELSE 0 END) as trade_count
         FROM trades WHERE status='closed' AND pnl_dollars IS NOT NULL
         GROUP BY symbol ORDER BY total_pnl DESC
-    """).fetchall()
+    """, (RESTATEMENT_STRATEGY, RESTATEMENT_STRATEGY, RESTATEMENT_STRATEGY)).fetchall()
     stats["by_symbol"] = [{
-        "symbol": r["symbol"], "trades": r["total"],
-        "wins": r["wins"], "win_rate": round(r["wins"] / r["total"] * 100, 1),
+        "symbol": r["symbol"], "trades": r["trade_count"],
+        "wins": r["wins"], "win_rate": round(r["wins"] / r["trade_count"] * 100, 1) if r["trade_count"] else 0,
         "total_pnl": round(r["total_pnl"] or 0, 2),
+        "restatement_pnl": round(r["restatement_pnl"] or 0, 2),
     } for r in rows]
 
     # By exit reason (tune exits from data: how much P&L comes from stops vs
@@ -519,6 +756,16 @@ def get_stats():
         "total_pnl": round(r["total_pnl"] or 0, 2),
     } for r in rows]
 
+    # Restatements (corporate actions / broker-truth corrections) — not trades
+    rows = conn.execute(f"""
+        SELECT symbol, ts, pnl_dollars, thesis FROM trades
+        WHERE strategy = '{RESTATEMENT_STRATEGY}' ORDER BY id
+    """).fetchall()
+    stats["restatements"] = [{
+        "symbol": r["symbol"], "ts": r["ts"],
+        "pnl": round(r["pnl_dollars"] or 0, 2),
+    } for r in rows]
+
     # Recent lessons
     rows = conn.execute("""
         SELECT category, lesson, confidence FROM lessons ORDER BY id DESC LIMIT 10
@@ -527,6 +774,112 @@ def get_stats():
 
     conn.close()
     return stats
+
+
+def get_broker_performance():
+    """Broker-truth performance from the per-cycle equity series.
+
+    The journal's trade-level P&L can drift from reality through corporate
+    actions, phantom fills, or mark-priced reconciliations (see the ETHA
+    saga of Oct 2026: journal said +$17.8k, broker equity said +$2.1k).
+    This computes performance the way an auditor would — from the equity
+    the BROKER reported at each cycle:
+
+      total return, max drawdown, annualized Sharpe/Sortino (daily equity),
+      days active, and the journal-vs-broker P&L gap as a drift check.
+
+    Uses the LAST cycle of each UTC day so intraday cycles don't overweight
+    volatile days.
+    """
+    init_db()
+    conn = _get_db()
+    rows = conn.execute("""
+        SELECT date(ts) AS d, equity FROM cycles
+        WHERE equity IS NOT NULL AND equity > 0
+        GROUP BY date(ts) HAVING MAX(ts) ORDER BY d
+    """).fetchall()
+    conn.close()
+    if len(rows) < 2:
+        return {"status": "insufficient_data", "cycles": len(rows)}
+
+    days = [r["d"] for r in rows]
+    eq = [float(r["equity"]) for r in rows]
+    start, last = eq[0], eq[-1]
+    total_ret = (last - start) / start
+
+    # max drawdown on the daily equity curve
+    peak, max_dd = eq[0], 0.0
+    for v in eq:
+        peak = max(peak, v)
+        if peak > 0:
+            max_dd = min(max_dd, v / peak - 1.0)
+
+    # daily returns -> annualized Sharpe/Sortino (rf = 0)
+    rets = [(eq[i] / eq[i - 1] - 1.0) for i in range(1, len(eq)) if eq[i - 1] > 0]
+    sharpe = sortino = None
+    if len(rets) >= 5:
+        mean = sum(rets) / len(rets)
+        var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+        std = var ** 0.5
+        if std > 0:
+            sharpe = mean / std * (252 ** 0.5)
+            downside = [r for r in rets if r < 0]
+            dstd = (sum(r ** 2 for r in downside) / len(downside)) ** 0.5 if downside else 0.0
+            if dstd > 0:
+                sortino = mean / dstd * (252 ** 0.5)
+
+    # journal drift check: journal realized P&L vs broker realized P&L
+    # (broker realized = equity change minus CURRENT unrealized, so both
+    # sides are market-invariant realized numbers). Uses LIVE account data
+    # when available — the cycles-table equity can be minutes stale, which
+    # leaks market noise into the drift figure.
+    conn = _get_db()
+    row = conn.execute(
+        "SELECT SUM(pnl_dollars) AS p FROM trades WHERE status='closed'").fetchone()
+    conn.close()
+    journal_pnl = float(row["p"] or 0) if row else 0.0
+    unrealized_now = 0.0
+    live_start = start
+    try:
+        import alpaca_client as _ac
+        live_acct = _ac.get_account()
+        live_equity = float(live_acct.get("equity") or 0)
+        unrealized_now = sum(float(p.get("unrealized_pl") or 0)
+                             for p in _ac.get_positions())
+        if live_equity > 0:
+            # realized since account inception (base_capital from config)
+            base_capital = 100000.0
+            try:
+                import yaml as _yaml
+                with open(Path(__file__).parent / "config.yaml") as _f:
+                    base_capital = float(_yaml.safe_load(_f).get("account", {}).get("base_capital", 100000))
+            except Exception:
+                pass
+            broker_realized = (live_equity - base_capital) - unrealized_now
+        else:
+            broker_realized = (last - start) - unrealized_now
+    except Exception:
+        broker_realized = (last - start) - unrealized_now
+    broker_pnl = last - start
+    n_days = (len(days))
+
+    return {
+        "status": "ok",
+        "start_equity": round(start, 2),
+        "current_equity": round(last, 2),
+        "total_return_pct": round(total_ret * 100, 2),
+        "total_pnl": round(broker_pnl, 2),
+        "max_drawdown_pct": round(max_dd * 100, 2),
+        "sharpe_annualized": round(sharpe, 2) if sharpe is not None else None,
+        "sortino_annualized": round(sortino, 2) if sortino is not None else None,
+        "days": n_days,
+        "journal_pnl": round(journal_pnl, 2),
+        "drift_pnl": round(journal_pnl - broker_realized, 2),
+        "broker_realized_pnl": round(broker_realized, 2),
+        "unrealized_now": round(unrealized_now, 2),
+        "note": "drift_pnl compares journal realized vs broker realized (equity change "
+                "minus current unrealized) — should stay near $0",
+    }
 
 
 def search_lessons(query, limit=5):
@@ -564,6 +917,7 @@ if __name__ == "__main__":
 
     sub.add_parser("stats", help="Show performance stats")
     sub.add_parser("lessons", help="Show recent lessons")
+    sub.add_parser("reconcile", help="Reconcile journal with broker (fills + positions)")
     sp = sub.add_parser("search", help="Search trades/lessons")
     sp.add_argument("query")
 
@@ -577,6 +931,16 @@ if __name__ == "__main__":
 
     if args.command == "stats":
         print(json.dumps(get_stats(), indent=2))
+    elif args.command == "reconcile":
+        fills = reconcile_journal()
+        print(f"[fills] scanned={fills['fills_scanned']} buys_added={fills['buys_added']} "
+              f"sells_applied={fills['sells_applied']}")
+        pos = reconcile_positions()
+        print(f"[positions] symbols={pos['symbols_checked']}")
+        for item in pos.get("rebased", []) + pos.get("closed", []) + pos.get("backfilled", []):
+            print(f"  ⚠ {item}")
+        for alert in pos.get("alerts", []):
+            print(f"  ☞ {alert}")
     elif args.command == "lessons":
         init_db()
         conn = _get_db()

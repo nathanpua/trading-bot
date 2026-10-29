@@ -483,6 +483,23 @@ class MemoryAnalyst(AnalystAgent):
     def _build_prompt(self, context):
         lines = [f"=== HISTORICAL DATA ({context['timestamp']}) ==="]
 
+        # Broker-truth performance FIRST — the journal's trade-level P&L can
+        # drift from reality (corporate actions, mark-priced reconciliations),
+        # so equity-curve numbers are the authoritative record. Quote these
+        # when stating overall performance; journal stats add trade-level detail.
+        bt = (context.get("journal", {}) or {}).get("broker_truth") or {}
+        if bt.get("status") == "ok":
+            drift = ""
+            if abs(bt.get("drift_pnl") or 0) > 100:
+                drift = (f" | journal P&L drifts ${bt['drift_pnl']:+,.0f} vs broker "
+                         f"— NEVER quote journal totals as portfolio performance")
+            lines.append(
+                f"BROKER-TRUTH (authoritative): {bt['days']}d | equity "
+                f"${bt['start_equity']:,.0f} -> ${bt['current_equity']:,.0f} "
+                f"({bt['total_return_pct']:+.2f}%) | maxDD {bt['max_drawdown_pct']:.2f}%"
+                + (f" | Sharpe {bt['sharpe_annualized']}" if bt.get("sharpe_annualized") is not None else "")
+                + drift)
+
         # Journal stats
         journal = context.get("journal", {})
         overall = journal.get("overall")
@@ -937,6 +954,23 @@ class TradingFloor:
         except Exception as e:
             logger.warning("Journal reconcile failed (non-fatal): %s", e)
 
+        # Position-truth gate — fills alone can't see corporate actions
+        # (reverse splits), oversells into shorts, or silent paper-account
+        # position resolutions (live case: ETHA 2026-10). Diffs broker
+        # POSITIONS vs journal open lots, closes phantom lots, rebases split
+        # quantities, and flags naked fills (no stop-loss). Runs after the
+        # fill projection so it sees the post-fill state.
+        try:
+            rec_pos = tj.reconcile_positions()
+            self.last_reconciliation = rec_pos
+            for item in (rec_pos.get("rebased", []) + rec_pos.get("closed", [])
+                         + rec_pos.get("backfilled", [])):
+                logger.warning("RECONCILE: %s", item)
+            for alert in rec_pos.get("alerts", []):
+                logger.warning("RECONCILE ALERT: %s", alert)
+        except Exception as e:
+            logger.warning("Position reconcile failed (non-fatal): %s", e)
+
         # Store balanced context to supermemory (not just losses)
         self._store_cycle_memory(context, plan, execution)
 
@@ -1142,6 +1176,21 @@ class TradingFloor:
             r.append(f"\nREJECTED: {'; '.join(rejs)}")
         r.append("")
 
+        # Journal ↔ broker reconciliation findings (position-truth gate)
+        rec_pos = getattr(self, "last_reconciliation", None) or {}
+        rec_items = (rec_pos.get("rebased", []) + rec_pos.get("closed", [])
+                     + rec_pos.get("backfilled", []))
+        rec_alerts = rec_pos.get("alerts", [])
+        if rec_items or rec_alerts:
+            r.append("─"*65)
+            r.append(" RECONCILIATION (journal vs broker)")
+            r.append("─"*65)
+            for item in rec_items:
+                r.append(f"  ⚠ {item}")
+            for alert in rec_alerts:
+                r.append(f"  ☞ {alert}")
+            r.append("")
+
         # Summary
         summary = plan.get("summary", "")
         if summary:
@@ -1175,6 +1224,7 @@ class TradingFloor:
                          for k, v in briefings.items()},
             "desk_chief_plan": {k: v for k, v in plan.items() if k != "raw_response"},
             "execution": execution,
+            "reconciliation": getattr(self, "last_reconciliation", None),
             "report": report,
         }
 
