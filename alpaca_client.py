@@ -384,18 +384,31 @@ def get_open_orders_for_symbol(symbol):
             yield o
 
 
+ACTIVE_STATUSES = {"NEW", "PARTIALLY_FILLED", "ACCEPTED", "PENDING_NEW",
+                   "HELD", "ACCEPTED_FOR_BIDDING", "CALCULATED"}
+
+
 def get_orders(status="open", limit=50):
-    """Get orders by status ('open', 'closed', 'all')."""
+    """Get orders by status ('open', 'closed', 'all').
+
+    'open' queries status=all and filters locally: Alpaca's ?status=open
+    filter does NOT return bracket stop legs in 'held' state, which would
+    make cancel-before-sell loops leave orphaned stops live (an orphaned
+    stop can later flip the account short after a manual/partial sell).
+    """
     client = get_trading_client()
     status_map = {
-        "open": QueryOrderStatus.OPEN,
+        "open": QueryOrderStatus.ALL,      # local filter below includes held
         "closed": QueryOrderStatus.CLOSED,
         "all": QueryOrderStatus.ALL,
     }
-    params = GetOrdersRequest(status=status_map.get(status, QueryOrderStatus.OPEN), limit=limit)
+    params = GetOrdersRequest(status=status_map.get(status, QueryOrderStatus.ALL), limit=limit)
     orders = client.get_orders(params)
     result = []
     for o in orders:
+        ostatus = str(o.status).replace("OrderStatus.", "").upper()
+        if status == "open" and ostatus not in ACTIVE_STATUSES:
+            continue
         result.append({
             "id": str(o.id),
             "symbol": o.symbol,
