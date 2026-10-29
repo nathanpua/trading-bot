@@ -643,10 +643,11 @@ def record_restatement(symbol, pnl_dollars, thesis, ts=None):
     conn.execute("""
         INSERT INTO trades (ts, symbol, side, qty, entry_price, exit_price,
             stop_price, target_price, pnl_dollars, pnl_pct, position_pct,
-            risk_pct, thesis, outcome, strategy, regime, tags, status, exit_reason)
+            risk_pct, thesis, outcome, strategy, regime, tags, status, broker_order_id,
+            exit_ts, exit_reason)
         VALUES (?, ?, 'ADJUST', 0, NULL, NULL, NULL, NULL, ?, NULL, NULL, NULL,
-                ?, 'adjustment', ?, '', '[]', 'closed', 'reconciled')
-    """, (ts, symbol.upper(), round(pnl_dollars, 2), thesis, RESTATEMENT_STRATEGY))
+                ?, 'adjustment', ?, '', '[]', 'closed', NULL, ?, 'reconciled')
+    """, (ts, symbol.upper(), round(pnl_dollars, 2), thesis, RESTATEMENT_STRATEGY, ts))
     rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.execute("""
         INSERT INTO trades_fts (rowid, symbol, thesis, strategy, tags)

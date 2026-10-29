@@ -15,6 +15,11 @@ from ..config import REPORTS_DIR, BOT_ROOT
 router = APIRouter(prefix="/api/performance", tags=["performance"])
 logger = logging.getLogger("dashboard")
 
+# Restatement rows (corporate actions / broker-truth corrections) are
+# accounting corrections, not trades: they count in realized totals and the
+# cumulative/monthly P&L, but never in win rate / streaks / largest-win-loss.
+RESTATEMENT_STRATEGY = "corporate_action_restatement"
+
 
 @router.get("")
 def get_performance():
@@ -35,7 +40,7 @@ def get_performance():
         equity_curve = []
         broker_ok = True
         try:
-            hist = alpaca_service.get_portfolio_history(period="1M", timeframe="1D")
+            hist = alpaca_service.get_portfolio_history(period="all", timeframe="1D")
             import datetime as _dt
             for ts, eq in zip(hist.get("timestamp") or [], hist.get("equity") or []):
                 if eq:  # skip leading zeros before account funding
@@ -66,8 +71,9 @@ def get_performance():
         # Closed trades for win/loss analysis
         closed = [t for t in trades if t.get("status") == "closed" and t.get("pnl_dollars") is not None]
 
-        # Trade-level metrics
-        trade_metrics: dict = _trade_metrics(closed)
+        # Trade-level metrics (restatements excluded — not trade decisions)
+        trade_metrics: dict = _trade_metrics(
+            [t for t in closed if t.get("strategy") != RESTATEMENT_STRATEGY])
 
         # Total P&L = realized + unrealized (account truth)
         realized = round(sum(t["pnl_dollars"] for t in closed), 2) if closed else 0.0
@@ -261,7 +267,11 @@ def _portfolio_metrics(returns_data):
 
 
 def _monthly_breakdown(closed_trades):
-    """P&L grouped by month (by trade EXIT date — when P&L was realized)."""
+    """P&L grouped by month (by trade EXIT date — when P&L was realized).
+
+    Restatement rows contribute their P&L to the month they correct, but are
+    not counted as trades/wins (they are accounting corrections).
+    """
     monthly = defaultdict(lambda: {"pnl": 0, "trades": 0, "wins": 0})
     for t in closed_trades:
         ts = t.get("exit_ts") or t.get("ts", "")
@@ -271,6 +281,8 @@ def _monthly_breakdown(closed_trades):
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
             key = dt.strftime("%Y-%m")
             monthly[key]["pnl"] += t["pnl_dollars"]
+            if t.get("strategy") == RESTATEMENT_STRATEGY:
+                continue
             monthly[key]["trades"] += 1
             if t["pnl_dollars"] > 0:
                 monthly[key]["wins"] += 1

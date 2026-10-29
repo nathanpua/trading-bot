@@ -96,8 +96,11 @@ export function Trades() {
                         <td className="td-mono">{fmt.time(t.ts)}</td>
                         <td style={{ fontWeight: 600, fontFamily: "var(--font-display)" }}>{t.symbol}</td>
                         <td>
-                          <span className={`badge ${t.side === "BUY" ? "badge-gain" : "badge-loss"}`}>
-                            {t.side}
+                          <span className={`badge ${
+                            t.side === "ADJUST" ? "badge-warn" :
+                            t.side === "BUY" ? "badge-gain" : "badge-loss"
+                          }`}>
+                            {t.side === "ADJUST" ? "RESTATE" : t.side}
                           </span>
                         </td>
                         <td className="td-mono td-right">{t.qty ? fmt.number(t.qty, 0) : "—"}</td>
