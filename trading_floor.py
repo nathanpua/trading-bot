@@ -417,7 +417,8 @@ class RiskAnalyst(AnalystAgent):
         risk_cfg = self._get_risk_config()
 
         lines = [f"=== RISK DATA ({context['timestamp']}) ==="]
-        lines.append(f"Equity: ${a.get('equity', 0):,.0f}")
+        lines.append(f"Book equity: ${a.get('book_equity', a.get('equity', 0)):,.0f} "
+                     f"(account carries idle legacy cash outside the book)")
         lines.append(f"Cash: ${a.get('cash', 0):,.0f} ({exp.get('cash_pct', 0):.1f}%)")
         lines.append(f"Deployed: ${exp.get('total', 0):,.0f} ({exp.get('pct_of_portfolio', 0):.1f}%)")
         max_pos = risk_cfg.get('max_positions')
@@ -467,8 +468,8 @@ class RiskAnalyst(AnalystAgent):
             hw = state.get("high_water")
             dd = None
             if hw:
-                acct = ac.get_account()
-                eq = float(acct["equity"])
+                import risk_manager as _rm
+                eq = _rm.book_equity(self.cfg)  # trading book, not broker equity
                 dd = (eq - hw) / hw * 100
                 return f"Drawdown from high-water: {dd:+.1f}%"
         except Exception:
@@ -884,7 +885,7 @@ class TradingFloor:
             tj.record_cycle(
                 session="ai_floor",
                 regime=regime,
-                equity=acct.get("equity", 0),
+                equity=acct.get("book_equity", acct.get("equity", 0)),
                 cash_pct=exp.get("cash_pct", 0),
                 deployed_pct=exp.get("pct_of_portfolio", 0),
                 position_count=exp.get("position_count", 0),
@@ -988,7 +989,7 @@ class TradingFloor:
 
             ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
             acct = context.get("account", {})
-            equity = acct.get("equity", 0)
+            equity = acct.get("book_equity", acct.get("equity", 0))
             day_pl = acct.get("day_pl_pct", 0)
             positions = context.get("positions", [])
             regime = context.get("regime", {}).get("regime", "?")
@@ -1054,7 +1055,8 @@ class TradingFloor:
         # Portfolio snapshot
         a = context.get("account", {})
         exp = context.get("exposure", {})
-        r.append(f"PORTFOLIO: ${a.get('equity', 0):,.0f} | Cash: ${a.get('cash', 0):,.0f} ({exp.get('cash_pct', 0):.0f}%)")
+        r.append(f"BOOK: ${a.get('book_equity', a.get('equity', 0)):,.0f} | "
+                 f"Deployable: ${exp.get('deployable_cash', 0):,.0f} ({exp.get('cash_pct', 0):.0f}%)")
         r.append(f"Deployed: ${exp.get('total', 0):,.0f} ({exp.get('pct_of_portfolio', 0):.1f}%) | "
                  f"Positions: {exp.get('position_count', 0)}")
         if context.get("positions"):

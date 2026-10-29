@@ -6,7 +6,16 @@
 
 account:
   paper: true                    # paper trading only (safety lock)
-  base_capital: 100000           # reference starting capital ($)
+  # The TRADING BOOK: all sizing, concentration/exposure caps, kill-switches
+  # and dashboards key off this + realized/unrealized P&L (risk_manager.book_equity).
+  # Paper accounts can't withdraw cash, so legacy capital (~$92k from the
+  # terminated 2026-07/10 experiment) stays in the account as idle cash —
+  # it must never inflate position sizes.
+  base_capital: 10000            # book restarts at $10,000 (2026-10-30)
+  # Reconciliation and journal history begin here. Broker fills BEFORE this
+  # date belong to the terminated experiment (archived 2026-10-30) and must
+  # never be replayed into the fresh journal.
+  book_start: "2026-10-30"
 
 risk:
   max_risk_per_trade: 0.02       # 2% of portfolio at risk per trade

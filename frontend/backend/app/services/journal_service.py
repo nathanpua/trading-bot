@@ -5,9 +5,44 @@ import json
 import sqlite3
 import logging
 from pathlib import Path
-from ..config import JOURNAL_DB, CYCLE_DIR, REPORTS_DIR
+from ..config import JOURNAL_DB, CYCLE_DIR, REPORTS_DIR, BOT_ROOT
 
 logger = logging.getLogger("dashboard")
+
+
+def book_equity() -> float:
+    """The TRADING BOOK: base_capital (config.yaml → account.base_capital)
+    + realized P&L (closed journal trades) + unrealized P&L (live positions).
+
+    The bot sizes and risk-gates against this number, not raw broker equity —
+    the paper account carries idle legacy cash outside the book that must
+    never inflate metrics or positions.
+    """
+    base = 100000.0
+    try:
+        import yaml
+        with open(BOT_ROOT / "config.yaml") as f:
+            base = float(yaml.safe_load(f).get("account", {}).get("base_capital", 100000))
+    except Exception:
+        pass
+    realized = 0.0
+    conn = _get_db()
+    if conn:
+        try:
+            row = conn.execute(
+                "SELECT SUM(pnl_dollars) FROM trades WHERE status='closed'").fetchone()
+            realized = float(row[0] or 0) if row else 0.0
+        except Exception:
+            pass
+        conn.close()
+    unrealized = 0.0
+    try:
+        from . import alpaca_service
+        unrealized = sum(float(p.get("unrealized_pl") or 0)
+                         for p in alpaca_service.get_positions())
+    except Exception:
+        pass
+    return round(base + realized + unrealized, 2)
 
 
 def _get_db():

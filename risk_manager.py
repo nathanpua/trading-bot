@@ -13,6 +13,42 @@ Core principles:
 import math
 
 
+def book_equity(cfg=None):
+    """The trading book: base_capital + realized P&L (journal) + unrealized
+    P&L (live broker positions).
+
+    Everything that sizes positions or trips a risk gate keys off THIS
+    number, never raw broker equity. The Alpaca paper account cannot
+    withdraw cash, so legacy capital stays in it ($100k+ from earlier
+    experiments) while the active book is `account.base_capital` in
+    config.yaml — a $10k book must trade like a $10k account: concentration,
+    exposure, kill-switch and per-trade risk math all scale to the book.
+    """
+    base = 100000.0
+    try:
+        base = float((cfg or {}).get("account", {}).get("base_capital", 100000) or 100000)
+    except Exception:
+        pass
+    realized = 0.0
+    try:
+        import sqlite3
+        import trade_journal as tj
+        conn = sqlite3.connect(str(tj.DB_PATH))
+        row = conn.execute(
+            "SELECT SUM(pnl_dollars) FROM trades WHERE status='closed'").fetchone()
+        conn.close()
+        realized = float(row[0] or 0) if row else 0.0
+    except Exception:
+        pass
+    unrealized = 0.0
+    try:
+        import alpaca_client as ac
+        unrealized = sum(float(p.get("unrealized_pl") or 0) for p in ac.get_positions())
+    except Exception:
+        pass
+    return round(base + realized + unrealized, 2)
+
+
 def calculate_position_size(portfolio_value, entry_price, stop_loss_price,
                             max_risk_pct=0.02, max_position_pct=0.25,
                             size_pct=None):

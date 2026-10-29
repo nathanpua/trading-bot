@@ -14,6 +14,9 @@ def get_portfolio():
     positions = alpaca_service.get_positions()
     market_open = alpaca_service.is_market_open()
     state = alpaca_service.get_bot_state()
+    # book_equity = base_capital + realized + unrealized — the number the bot
+    # actually trades and risks against (account equity includes idle cash)
+    account = {**account, "book_equity": journal_service.book_equity()}
     return {
         "account": account,
         "positions": positions,

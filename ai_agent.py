@@ -191,7 +191,10 @@ def build_market_context(cfg):
         "day_pl_pct": round(float(acct.get("day_plpc", 0)) * 100, 2),
     }
 
-    # 2. Positions with technicals
+    # 2. Positions with technicals (%s against the trading BOOK)
+    import risk_manager as _rm
+    book = _rm.book_equity(cfg)
+    ctx["account"]["book_equity"] = book
     positions = []
     held_symbols = set()
     for p in positions_raw:
@@ -205,7 +208,7 @@ def build_market_context(cfg):
             "market_value": float(p["market_value"]),
             "unrealized_pl": float(p["unrealized_pl"]),
             "unrealized_plpc": round(float(p["unrealized_plpc"]) * 100, 2),
-            "position_pct": round(float(p["market_value"]) / float(acct.get("portfolio_value", 1)) * 100, 2),
+            "position_pct": round(float(p["market_value"]) / book * 100, 2) if book else 0,
         }
         # Add technicals
         tech = _get_technicals(sym)
@@ -218,14 +221,18 @@ def build_market_context(cfg):
         positions.append(pos)
     ctx["positions"] = positions
 
-    # 3. Exposure
+    # 3. Exposure — against the trading book (computed above). Cash is the
+    # book's deployable cash (book − deployed), NOT broker cash: the account
+    # carries ~$92k of idle legacy capital outside the book.
     total_exposure = sum(p["market_value"] for p in positions)
-    pv = ctx["account"]["portfolio_value"]
+    pv = book
+    book_cash = max(book - total_exposure, 0)
     ctx["exposure"] = {
         "total": round(total_exposure, 2),
         "pct_of_portfolio": round(total_exposure / pv * 100, 1) if pv else 0,
         "position_count": len(positions),
-        "cash_pct": round(float(acct.get("cash", 0)) / pv * 100, 1) if pv else 0,
+        "cash_pct": round(book_cash / pv * 100, 1) if pv else 0,
+        "deployable_cash": round(book_cash, 2),
     }
 
     # 4. Regime assessment
@@ -825,9 +832,9 @@ class AITradingAgent:
         # Check kill-switch state
         try:
             from autonomous_engine import load_state, check_kill_switch
+            import risk_manager as _rm
             state = load_state()
-            acct = ac.get_account()
-            equity = float(acct["equity"])
+            equity = _rm.book_equity(self.cfg)  # trading book, not broker equity
             halt, halt_reason = check_kill_switch(state, equity, self.cfg)
             if halt:
                 # Allow CLOSE/SELL/HOLD but block BUY

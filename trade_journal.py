@@ -275,9 +275,20 @@ def reconcile_journal(thesis_map=None):
     base = tc._base_url.rstrip("/")
     hdrs = tc._get_auth_headers()
 
-    # paginate closed orders (filled/canceled/expired), chronological
+    # paginate closed orders (filled/canceled/expired), chronological.
+    # Anchor to the BOOK START (config account.book_start): fills before it
+    # belong to a terminated experiment and must never replay into a fresh
+    # journal. Falls back to the legacy hard-coded era for old books.
+    after = "2026-07-31T00:00:00Z"
+    try:
+        import yaml as _yaml
+        with open(Path(__file__).parent / "config.yaml") as _f:
+            _start = _yaml.safe_load(_f).get("account", {}).get("book_start")
+        if _start:
+            after = f"{_start}T00:00:00Z"
+    except Exception:
+        pass
     fills = []
-    after = "2026-07-31T00:00:00Z"  # account reset date — ignore anything older
     while True:
         resp = requests.get(f"{base}/v2/orders",
                             params={"status": "closed", "direction": "asc",
@@ -829,36 +840,37 @@ def get_broker_performance():
             if dstd > 0:
                 sortino = mean / dstd * (252 ** 0.5)
 
-    # journal drift check: journal realized P&L vs broker realized P&L
-    # (broker realized = equity change minus CURRENT unrealized, so both
-    # sides are market-invariant realized numbers). Uses LIVE account data
-    # when available — the cycles-table equity can be minutes stale, which
-    # leaks market noise into the drift figure.
+    # journal drift check: journal realized P&L vs the book's realized P&L.
+    # In book mode (base_capital far below broker equity — the account holds
+    # idle legacy cash), live broker equity can't measure the book, so the
+    # drift compares the journal against the cycles-table equity series
+    # (which records book equity each cycle) instead.
     conn = _get_db()
     row = conn.execute(
         "SELECT SUM(pnl_dollars) AS p FROM trades WHERE status='closed'").fetchone()
     conn.close()
     journal_pnl = float(row["p"] or 0) if row else 0.0
     unrealized_now = 0.0
-    live_start = start
+    base_capital = 100000.0
+    try:
+        import yaml as _yaml
+        with open(Path(__file__).parent / "config.yaml") as _f:
+            base_capital = float(_yaml.safe_load(_f).get("account", {}).get(
+                "base_capital", 100000))
+    except Exception:
+        pass
+    book_mode = False
     try:
         import alpaca_client as _ac
         live_acct = _ac.get_account()
         live_equity = float(live_acct.get("equity") or 0)
         unrealized_now = sum(float(p.get("unrealized_pl") or 0)
                              for p in _ac.get_positions())
-        if live_equity > 0:
-            # realized since account inception (base_capital from config)
-            base_capital = 100000.0
-            try:
-                import yaml as _yaml
-                with open(Path(__file__).parent / "config.yaml") as _f:
-                    base_capital = float(_yaml.safe_load(_f).get("account", {}).get("base_capital", 100000))
-            except Exception:
-                pass
+        book_mode = 0 < base_capital < live_equity * 0.5
+        if not book_mode:
             broker_realized = (live_equity - base_capital) - unrealized_now
         else:
-            broker_realized = (last - start) - unrealized_now
+            broker_realized = (last - start) - unrealized_now  # book series
     except Exception:
         broker_realized = (last - start) - unrealized_now
     broker_pnl = last - start

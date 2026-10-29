@@ -33,8 +33,14 @@ export function Dashboard() {
   if (!portfolio) return <div className="empty-state">Unable to load portfolio data.</div>;
 
   const acct = portfolio.account;
-  const equityNum = parseFloat(String(acct.equity)) || 0;
-  const cashNum = parseFloat(String(acct.cash)) || 0;
+  // Book equity (base_capital + P&L) is what the bot trades and risks
+  // against; account equity includes idle legacy cash in the paper account.
+  const bookNum = acct.book_equity != null ? Number(acct.book_equity) : parseFloat(String(acct.equity)) || 0;
+  const equityNum = bookNum;
+  const acctNum = parseFloat(String(acct.equity)) || 0;
+  const cashNum = acct.book_equity != null
+    ? Math.max(bookNum - (parseFloat(String(acct.long_market_value)) || 0), 0)
+    : parseFloat(String(acct.cash)) || 0;
   const longVal = parseFloat(String(acct.long_market_value)) || 0;
   const dayPL = parseFloat(String(acct.day_pl)) || 0;
   const dayPLPct = parseFloat(String(acct.day_plpc)) || 0;
@@ -52,9 +58,9 @@ export function Dashboard() {
     <>
       <div className="metric-grid">
         <div className="metric">
-          <div className="metric-label">Equity</div>
+          <div className="metric-label">Trading Book</div>
           <div className="metric-value">{fmt.currency(equityNum)}</div>
-          <div className="metric-sub">High: {fmt.currency(highWater)}</div>
+          <div className="metric-sub">Account equity: {fmt.currency(acctNum)}</div>
         </div>
         <div className="metric">
           <div className="metric-label">Day P&L</div>

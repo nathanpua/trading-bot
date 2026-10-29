@@ -440,7 +440,9 @@ def plan_and_execute_entries(cfg, regime, candidates, execute):
     """Risk-govern each candidate, size by regime, submit bracket orders."""
     rcfg = cfg["risk"]
     acct = ac.get_account()
-    pv = float(acct["portfolio_value"])
+    # Trading BOOK (base_capital + P&L), not raw broker equity — idle
+    # legacy cash in the paper account must not inflate position sizes.
+    pv = rm.book_equity(cfg)
     cash = float(acct["cash"])
     positions = ac.get_positions()
     held = {p["symbol"] for p in positions}
@@ -508,7 +510,7 @@ def snapshot_portfolio():
     acct = ac.get_account()
     positions = ac.get_positions()
     lines = []
-    lines.append(f"EQUITY   ${float(acct['equity']):>10,.2f}")
+    lines.append(f"BOOK     ${rm.book_equity(load_config()):>10,.2f}   (account cash ${float(acct['cash']):,.0f})")
     lines.append(f"CASH     ${float(acct['cash']):>10,.2f}")
     lines.append(f"POSITIONS {len(positions)}")
     if positions:
@@ -529,7 +531,7 @@ def snapshot_portfolio():
 
 def build_report(phase, regime, kill, entries, exits, execute):
     acct = ac.get_account()
-    pv = float(acct["portfolio_value"])
+    pv = rm.book_equity(load_config())
     r = []
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     r.append(f"{'='*52}")
@@ -578,8 +580,8 @@ def main():
     cfg = load_config()
     state = load_state()
     acct = ac.get_account()
-    equity = float(acct["equity"])
-    pv = float(acct["portfolio_value"])
+    equity = rm.book_equity(cfg)   # trading book, not raw broker equity
+    pv = equity
 
     if args.phase == "report":
         print(f"PORTFOLIO SNAPSHOT (${pv:,.0f})\n{'─'*40}")

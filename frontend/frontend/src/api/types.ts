@@ -3,6 +3,7 @@ export interface Account {
   cash: string | number;
   buying_power: string | number;
   portfolio_value: string | number;
+  book_equity?: number;   // base_capital + realized + unrealized (the trading book)
   day_pl: string | number;
   day_plpc: string | number;
   long_market_value: string | number;

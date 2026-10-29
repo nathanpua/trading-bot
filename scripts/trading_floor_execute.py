@@ -42,7 +42,10 @@ def execute_plan(plan, cfg, dry_run=True):
     """Execute a list of trade actions with full risk governance."""
     rcfg = cfg["risk"]
     acct = ac.get_account()
-    pv = float(acct["portfolio_value"])
+    # Size and cap against the TRADING BOOK (base_capital + P&L), not raw
+    # broker equity — idle legacy cash in the paper account must not inflate
+    # position sizes. See risk_manager.book_equity.
+    pv = rm.book_equity(cfg)
     cash = float(acct["cash"])
     positions = {p["symbol"]: p for p in ac.get_positions()}
     clock = ac.is_market_open()

@@ -57,34 +57,63 @@ def get_performance():
         stats = journal_service.get_stats()
         trades = journal_service.get_trades(limit=500)
 
-        # ── broker-truth equity curve ──
+        # ── equity curve ──
+        # Book mode (base_capital << broker equity — the account carries idle
+        # legacy cash): the BOOK curve (per-cycle book equity from the journal)
+        # is the real track record; the broker curve is a ~$102k cash blob.
+        # Otherwise the broker curve is ground truth.
         equity_curve = []
         broker_ok = True
+        book_mode = False
         try:
-            hist = alpaca_service.get_portfolio_history(period="all", timeframe="1D")
-            import datetime as _dt
-            for ts, eq in zip(hist.get("timestamp") or [], hist.get("equity") or []):
-                if eq:  # skip leading zeros before account funding
-                    equity_curve.append({
-                        "ts": _dt.datetime.fromtimestamp(
-                            ts, tz=_dt.timezone.utc).strftime("%Y-%m-%d"),
-                        "equity": float(eq),
-                    })
-            # append the live point (intraday equity as of this request)
-            acct = alpaca_service.get_account()
-            live_eq = float(acct.get("equity") or 0)
-            if live_eq:
-                today = _dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%d")
-                if equity_curve and equity_curve[-1]["ts"] == today:
-                    equity_curve[-1]["equity"] = live_eq
-                else:
-                    equity_curve.append({"ts": today, "equity": live_eq})
+            import yaml as _yaml
+            from ..config import BOT_ROOT as _root
+            with open(_root / "config.yaml") as _f:
+                _base = float(_yaml.safe_load(_f).get("account", {}).get("base_capital", 100000))
+            _live = float(alpaca_service.get_account().get("equity") or 0)
+            book_mode = 0 < _base < _live * 0.5
+        except Exception:
+            pass
+        try:
+            if book_mode:
+                jh = journal_service.get_equity_history()
+                equity_curve = [{"ts": p["ts"][:10], "equity": float(p["equity"])}
+                                for p in jh if p.get("equity")]
+                # live book point (intraday, as of this request)
+                _be = journal_service.book_equity()
+                if _be:
+                    import datetime as _dt
+                    _today = _dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%d")
+                    if equity_curve and equity_curve[-1]["ts"] == _today:
+                        equity_curve[-1]["equity"] = _be
+                    else:
+                        equity_curve.append({"ts": _today, "equity": _be})
+            if not book_mode:
+                hist = alpaca_service.get_portfolio_history(period="all", timeframe="1D")
+                import datetime as _dt
+                for ts, eq in zip(hist.get("timestamp") or [], hist.get("equity") or []):
+                    if eq:  # skip leading zeros before account funding
+                        equity_curve.append({
+                            "ts": _dt.datetime.fromtimestamp(
+                                ts, tz=_dt.timezone.utc).strftime("%Y-%m-%d"),
+                            "equity": float(eq),
+                        })
+                # append the live point (intraday equity as of this request)
+                acct = alpaca_service.get_account()
+                live_eq = float(acct.get("equity") or 0)
+                if live_eq:
+                    today = _dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%d")
+                    if equity_curve and equity_curve[-1]["ts"] == today:
+                        equity_curve[-1]["equity"] = live_eq
+                    else:
+                        equity_curve.append({"ts": today, "equity": live_eq})
         except Exception as e:
             logger.warning("Broker equity history unavailable, falling back to journal: %s", e)
             broker_ok = False
-            jh = journal_service.get_equity_history()
-            equity_curve = [{"ts": p["ts"][:10], "equity": float(p["equity"])}
-                            for p in jh if p.get("equity")]
+            if not equity_curve:
+                jh = journal_service.get_equity_history()
+                equity_curve = [{"ts": p["ts"][:10], "equity": float(p["equity"])}
+                                for p in jh if p.get("equity")]
 
         # Calculate returns from equity curve (sorted, deduped by day)
         returns_data = _calculate_returns(equity_curve)
@@ -135,7 +164,7 @@ def get_performance():
 
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "data_source": "broker" if broker_ok else "journal",
+            "data_source": "book" if book_mode else ("broker" if broker_ok else "journal"),
             "trade_metrics": trade_metrics,
             "portfolio_metrics": portfolio_metrics,
             "overall": stats.get("overall"),
