@@ -16,7 +16,21 @@ def get_portfolio():
     state = alpaca_service.get_bot_state()
     # book_equity = base_capital + realized + unrealized — the number the bot
     # actually trades and risks against (account equity includes idle cash)
-    account = {**account, "book_equity": journal_service.book_equity()}
+    book = journal_service.book_equity()
+    account = {**account, "book_equity": book}
+    # Day P&L on the BOOK scale. Alpaca's day_pl/day_plpc measure against the
+    # whole account (and its last_equity baseline lags corporate actions /
+    # liquidations), which showed +$776 on a flat day for the book. The
+    # kill-switch day baseline is the authoritative day anchor.
+    day_start = state.get("day_start_equity")
+    if day_start and float(day_start) > 0 and state.get("day_start_date"):
+        book_day_pl = book - float(day_start)
+        book_day_pct = book_day_pl / float(day_start)
+        account = {**account,
+                   "broker_day_pl": account.get("day_pl"),
+                   "broker_day_plpc": account.get("day_plpc"),
+                   "day_pl": round(book_day_pl, 2),
+                   "day_plpc": round(book_day_pct, 6)}
     positions = _attach_stops(positions)
     return {
         "account": account,
@@ -66,5 +80,20 @@ def _attach_stops(positions):
 
 @router.get("/equity-history")
 def get_equity_history():
-    """Equity curve data points from cycle reports."""
-    return journal_service.get_equity_history()
+    """Equity curve data points from cycle reports (book equity), plus the
+    live book point so the home chart reflects now, not the last cycle."""
+    history = journal_service.get_equity_history()
+    try:
+        from datetime import datetime, timezone
+        book = journal_service.book_equity()
+        now = datetime.now(timezone.utc).isoformat()
+        if history and book:
+            if str(history[-1].get("ts", ""))[:10] == now[:10]:
+                history[-1] = {**history[-1], "ts": now, "equity": book}
+            else:
+                history.append({"ts": now, "equity": book, "source": "live"})
+        elif book:
+            history.append({"ts": now, "equity": book, "source": "live"})
+    except Exception:
+        pass
+    return history

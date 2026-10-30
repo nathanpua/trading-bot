@@ -131,13 +131,13 @@ export function Performance() {
           <MetricTile label="Profit Factor" value={tm.profit_factor !== null ? tm.profit_factor.toFixed(2) : "∞"}
             sub={tm.profit_factor !== null ? (tm.profit_factor > 1.5 ? "Strong" : tm.profit_factor > 1 ? "Profitable" : "Unprofitable") : ""}
             color={tm.profit_factor === null ? "var(--gain)" : tm.profit_factor > 1 ? "var(--gain)" : "var(--loss)"} />
-          <MetricTile label="Avg Win" value={fmt.currency(tm.avg_win)} color="var(--gain)" />
-          <MetricTile label="Avg Loss" value={fmt.currency(tm.avg_loss)} color="var(--loss)" />
-          <MetricTile label="Expectancy" value={fmt.signedCurrency(tm.expectancy)}
-            sub="per trade" color={pnlColor(tm.expectancy)} />
-          <MetricTile label="Best Streak" value={`${tm.max_win_streak}W`} sub={`Worst: ${tm.max_loss_streak}L`} />
-          <MetricTile label="Largest Win" value={fmt.currency(tm.largest_win)} color="var(--gain)" />
-          <MetricTile label="Largest Loss" value={fmt.currency(tm.largest_loss)} color="var(--loss)" />
+          <MetricTile label="Avg Win" value={tm.total > 0 ? fmt.currency(tm.avg_win) : "—"} color="var(--gain)" />
+          <MetricTile label="Avg Loss" value={tm.total > 0 ? fmt.currency(tm.avg_loss) : "—"} color="var(--loss)" />
+          <MetricTile label="Expectancy" value={tm.total > 0 ? fmt.signedCurrency(tm.expectancy) : "—"}
+            sub={tm.total > 0 ? "per trade" : "no closed trades yet"} color={tm.total > 0 ? pnlColor(tm.expectancy) : undefined} />
+          <MetricTile label="Best Streak" value={tm.total > 0 ? `${tm.max_win_streak}W` : "—"} sub={tm.total > 0 ? `Worst: ${tm.max_loss_streak}L` : ""} />
+          <MetricTile label="Largest Win" value={tm.total > 0 ? fmt.currency(tm.largest_win) : "—"} color="var(--gain)" />
+          <MetricTile label="Largest Loss" value={tm.total > 0 ? fmt.currency(tm.largest_loss) : "—"} color="var(--loss)" />
         </div>
       </div>
 
