@@ -159,6 +159,11 @@ def get_performance():
         events = sorted(
             (e for e in events if e.get("ts")), key=lambda e: e["ts"])
 
+        # Only annotate events that fall INSIDE the plotted curve — a fresh
+        # book must not show the previous experiment's corporate-action notes
+        curve_days = {str(p.get("ts", ""))[:10] for p in equity_curve}
+        events = [e for e in events if e["ts"] in curve_days]
+
         # Cumulative P&L over time (realized only — knows nothing about open)
         cumulative = _cumulative_pnl(closed)
 
@@ -280,7 +285,12 @@ def _trade_metrics(closed_trades):
 
 
 def _portfolio_metrics(returns_data):
-    """Sharpe, Sortino, max drawdown, volatility from equity curve returns."""
+    """Sharpe, Sortino, max drawdown, volatility from equity curve returns.
+
+    Ratio metrics (sharpe/sortino/volatility) need a real sample — with a
+    handful of points they're noise, so they return None (the UI shows —)
+    until >= 5 daily returns exist. Drawdown/total-return are exact at any n.
+    """
     if len(returns_data) < 2:
         return {"sharpe": None, "sortino": None, "max_drawdown": None,
                 "volatility": None, "total_return": None, "avg_return": None}
@@ -296,11 +306,14 @@ def _portfolio_metrics(returns_data):
     ann_factor = math.sqrt(252)
     rf = 0.04 / 252  # risk-free rate per day (4% annual)
 
-    sharpe = ((avg_ret - rf) / std * ann_factor) if std > 0 else None
+    if n >= 5 and std > 0:
+        sharpe = (avg_ret - rf) / std * ann_factor
+    else:
+        sharpe = None
 
     # Sortino: only downside deviation
     downside = [r for r in rets if r < 0]
-    if downside:
+    if n >= 5 and downside:
         ds_var = sum(r ** 2 for r in downside) / len(downside)
         ds_std = math.sqrt(ds_var)
         sortino = ((avg_ret - rf) / ds_std * ann_factor) if ds_std > 0 else None
@@ -327,7 +340,7 @@ def _portfolio_metrics(returns_data):
         "sharpe": round(sharpe, 2) if sharpe is not None else None,
         "sortino": round(sortino, 2) if sortino is not None else None,
         "max_drawdown": round(max_dd * 100, 2),
-        "volatility": round(std * ann_factor * 100, 2),
+        "volatility": round(std * ann_factor * 100, 2) if (n >= 5 and std > 0) else None,
         "total_return": round(total_return, 2),
         "avg_daily_return": round(avg_ret * 100, 3),
     }

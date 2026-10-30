@@ -1217,7 +1217,12 @@ class TradingFloor:
             "model": self.model,
             "agents": [a.name for a in self.agents],
             "context_summary": {
-                "equity": context.get("account", {}).get("equity", 0),
+                # BOOK equity — this is what the dashboard equity curve and
+                # metrics plot; broker account equity carries idle legacy
+                # cash and would dwarf the book.
+                "equity": context.get("account", {}).get("book_equity",
+                          context.get("account", {}).get("equity", 0)),
+                "account_equity": context.get("account", {}).get("equity", 0),
                 "positions": len(context.get("positions", [])),
                 "candidates": len(context.get("candidates", [])),
                 "regime": context.get("regime", {}).get("regime", "?"),
