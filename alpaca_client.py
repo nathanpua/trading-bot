@@ -417,6 +417,8 @@ def get_orders(status="open", limit=50):
             "status": str(o.status),
             "type": str(o.order_type),
             "created_at": str(o.created_at),
+            "stop_price": float(o.stop_price) if getattr(o, "stop_price", None) else None,
+            "limit_price": float(o.limit_price) if getattr(o, "limit_price", None) else None,
             "filled_price": str(o.filled_avg_price) if o.filled_avg_price else None,
             "filled_qty": str(o.filled_qty) if o.filled_qty else None,
         })

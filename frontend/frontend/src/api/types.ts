@@ -19,6 +19,8 @@ export interface Position {
   market_value: string | number;
   unrealized_pl: string | number;
   unrealized_plpc: string | number;
+  stop_price?: number;     // from journal lots or live bracket legs (server-enriched)
+  target_price?: number;
   [key: string]: unknown;
 }
 

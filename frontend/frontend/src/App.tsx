@@ -32,7 +32,9 @@ export default function App() {
       api.portfolio().then((d: any) => {
         setMarketOpen(d.market_open?.is_open ?? false);
         const a = d.account;
-        setEquity(String(a?.equity || ""));
+        // BOOK equity — what the bot actually trades (account equity
+        // includes ~$92k of idle legacy cash outside the book)
+        setEquity(String(a?.book_equity ?? a?.equity ?? ""));
         setDayPL(String(a?.day_plpc || ""));
       }).catch(() => {});
       api.aiCycleLatest().then((d: any) => {
@@ -74,7 +76,7 @@ export default function App() {
             <span className={`status-dot ${marketOpen ? "open" : "closed"}`} />
             Market {marketOpen ? "OPEN" : "CLOSED"}
           </div>
-          <div className="footer-line">Alpaca Paper · GLM 5.2</div>
+          <div className="footer-line">Alpaca Paper · GLM 5.3 Flash</div>
         </div>
       </aside>
       <main className="main">
@@ -84,7 +86,7 @@ export default function App() {
             <span className="desk-bar-value">{marketOpen ? "LIVE" : "CLOSED"}</span>
           </div>
           <div className="desk-bar-item">
-            <span className="desk-bar-label">Equity</span>
+            <span className="desk-bar-label">Book</span>
             <span className="desk-bar-value">{fmtEquity}</span>
           </div>
           <div className="desk-bar-item">
@@ -101,7 +103,7 @@ export default function App() {
           )}
           <div className="desk-bar-item">
             <span className="desk-bar-label">Model</span>
-            <span className="desk-bar-value">GLM 5.2</span>
+            <span className="desk-bar-value">GLM 5.3 Flash</span>
           </div>
         </div>
         <div className="main-content">

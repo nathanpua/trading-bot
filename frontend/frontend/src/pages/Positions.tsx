@@ -57,7 +57,9 @@ export function Positions() {
                   const upl = parseFloat(String(pos.unrealized_pl));
                   const uplPct = parseFloat(String(pos.unrealized_plpc));
                   const botState = botPositions[sym];
-                  const stop = botState?.stop;
+                  // stop/target from journal lots or live broker brackets
+                  // (enriched server-side); engine state is a legacy fallback
+                  const stop = pos.stop_price != null ? Number(pos.stop_price) : botState?.stop;
                   const entryHigh = botState?.high || entry;
 
                   return (
@@ -100,7 +102,8 @@ export function Positions() {
             const upl = parseFloat(String(pos.unrealized_pl));
             const uplPct = parseFloat(String(pos.unrealized_plpc));
             const botState = botPositions[sym];
-            const stop = botState?.stop;
+            const stop = pos.stop_price != null ? Number(pos.stop_price) : botState?.stop;
+            const target = pos.target_price != null ? Number(pos.target_price) : undefined;
             const entryDate = botState?.entry_date;
 
             return (
@@ -123,7 +126,7 @@ export function Positions() {
                 </div>
                 {stop && (
                   <div className="metric-sub" style={{ marginTop: 8 }}>
-                    Stop: {fmt.currency(stop)} · Entry: {fmt.currency(entry)}
+                    Stop: {fmt.currency(stop)}{target ? ` · Target: ${fmt.currency(target)}` : ""} · Entry: {fmt.currency(entry)}
                   </div>
                 )}
                 {entryDate && (

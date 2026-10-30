@@ -831,11 +831,15 @@ class AITradingAgent:
 
         # Check kill-switch state
         try:
-            from autonomous_engine import load_state, check_kill_switch
+            from autonomous_engine import load_state, check_kill_switch, save_state
             import risk_manager as _rm
             state = load_state()
             equity = _rm.book_equity(self.cfg)  # trading book, not broker equity
             halt, halt_reason = check_kill_switch(state, equity, self.cfg)
+            # Persist high-water / daily baseline / halt expiry — without this
+            # every cycle re-baselines and the -2% daily / -8% drawdown halts
+            # can never trigger from accumulated moves.
+            save_state(state)
             if halt:
                 # Allow CLOSE/SELL/HOLD but block BUY
                 for a in actions:
