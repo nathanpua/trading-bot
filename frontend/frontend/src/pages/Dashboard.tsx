@@ -70,7 +70,7 @@ export function Dashboard() {
           <div className="metric-sub">{fmt.signedPct(dayPLPct)}</div>
         </div>
         <div className="metric">
-          <div className="metric-label">Cash</div>
+          <div className="metric-label">Deployable</div>
           <div className="metric-value">{fmt.currency(cashNum)}</div>
           <div className="metric-sub">{exposure.toFixed(1)}% deployed</div>
         </div>
@@ -151,7 +151,7 @@ export function Dashboard() {
 
       {aiReport && (
         <div className="section">
-          <div className="section-title">Latest AI Trading Floor Report</div>
+          <div className="section-title">Latest AI Trading Floor Report <span style={{ fontSize: 11, color: "var(--text-dim)" }}>— snapshot at last cycle start; live metrics above</span></div>
           <div className="cycle-report">{aiReport.report}</div>
         </div>
       )}

@@ -32,6 +32,16 @@ def get_portfolio():
                    "day_pl": round(book_day_pl, 2),
                    "day_plpc": round(book_day_pct, 6)}
     positions = _attach_stops(positions)
+    # Kill-switch state's "positions" map is only maintained by the legacy
+    # deterministic engine; the trading floor never fills it — populate from
+    # live positions so the panel doesn't claim "Positions tracked: 0" while
+    # holding a book.
+    if not state.get("positions"):
+        state = {**state, "positions": {
+            p["symbol"]: {"entry": float(p.get("avg_entry_price") or 0),
+                          "stop": p.get("stop_price")}
+            for p in positions
+        }}
     return {
         "account": account,
         "positions": positions,

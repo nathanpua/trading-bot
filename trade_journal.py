@@ -285,7 +285,11 @@ def reconcile_journal(thesis_map=None):
         with open(Path(__file__).parent / "config.yaml") as _f:
             _start = _yaml.safe_load(_f).get("account", {}).get("book_start")
         if _start:
-            after = f"{_start}T00:00:00Z"
+            # accept a date ("2026-10-30") or a full UTC timestamp
+            # ("2026-10-29T16:00:00Z") — a date-only anchor at UTC midnight
+            # can fall AFTER a book's opening session in other timezones and
+            # silently skip its fills (losing AI context to the backfill path)
+            after = str(_start) if "T" in str(_start) else f"{_start}T00:00:00Z"
     except Exception:
         pass
     fills = []

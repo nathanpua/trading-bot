@@ -13,9 +13,10 @@ account:
   # it must never inflate position sizes.
   base_capital: 10000            # book restarts at $10,000 (2026-10-30)
   # Reconciliation and journal history begin here. Broker fills BEFORE this
-  # date belong to the terminated experiment (archived 2026-10-30) and must
-  # never be replayed into the fresh journal.
-  book_start: "2026-10-30"
+  # moment belong to a terminated experiment (archived 2026-10-30) and must
+  # never be replayed into the fresh journal. Exact UTC timestamp: boundary sits between the legacy
+  # liquidation (17:15 UTC) and the book's first buy (17:28 UTC).
+  book_start: "2026-10-29T17:20:00Z"
 
 risk:
   max_risk_per_trade: 0.02       # 2% of portfolio at risk per trade

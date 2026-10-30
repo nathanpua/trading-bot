@@ -128,9 +128,9 @@ export function Performance() {
         <div className="metric-grid">
           <MetricTile label="Win Rate" value={tm.total > 0 ? `${tm.win_rate}%` : "—"}
             sub={tm.total > 0 ? `${tm.wins}W / ${tm.losses}L` : ""} />
-          <MetricTile label="Profit Factor" value={tm.profit_factor !== null ? tm.profit_factor.toFixed(2) : "∞"}
-            sub={tm.profit_factor !== null ? (tm.profit_factor > 1.5 ? "Strong" : tm.profit_factor > 1 ? "Profitable" : "Unprofitable") : ""}
-            color={tm.profit_factor === null ? "var(--gain)" : tm.profit_factor > 1 ? "var(--gain)" : "var(--loss)"} />
+          <MetricTile label="Profit Factor" value={tm.total > 0 && tm.profit_factor !== null ? tm.profit_factor.toFixed(2) : "—"}
+            sub={tm.total > 0 && tm.profit_factor !== null ? (tm.profit_factor > 1.5 ? "Strong" : tm.profit_factor > 1 ? "Profitable" : "Unprofitable") : ""}
+            color={tm.total > 0 && tm.profit_factor !== null && tm.profit_factor <= 1 ? "var(--loss)" : undefined} />
           <MetricTile label="Avg Win" value={tm.total > 0 ? fmt.currency(tm.avg_win) : "—"} color="var(--gain)" />
           <MetricTile label="Avg Loss" value={tm.total > 0 ? fmt.currency(tm.avg_loss) : "—"} color="var(--loss)" />
           <MetricTile label="Expectancy" value={tm.total > 0 ? fmt.signedCurrency(tm.expectancy) : "—"}
@@ -156,7 +156,10 @@ export function Performance() {
                 </defs>
                 <XAxis dataKey="ts" tick={{ fill: "#5c6677", fontSize: 11 }} axisLine={{ stroke: "#232b38" }} />
                 <YAxis tick={{ fill: "#5c6677", fontSize: 11 }} axisLine={{ stroke: "#232b38" }}
-                  domain={["auto", "auto"]} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
+                  domain={["auto", "auto"]} tickFormatter={(v) => {
+                    const k = v / 1000;
+                    return `$${k >= 10 && k < 100 ? k.toFixed(2) : k.toFixed(0)}k`;
+                  }} />
                 <Tooltip contentStyle={{ background: "#0f1419", border: "1px solid #232b38", borderRadius: 6, color: "#e6edf3" }} />
                 {(data.equity_events || [])
                   .filter(ev => equityData.some(d => d.ts === ev.ts.slice(5)))
